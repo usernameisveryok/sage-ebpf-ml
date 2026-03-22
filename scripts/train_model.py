@@ -133,10 +133,13 @@ def softmax(z):
     e = np.exp(z - z.max(axis=-1, keepdims=True))
     return e / e.sum(axis=-1, keepdims=True)
 
-def cross_entropy_loss(probs, y):
-    """Mean cross-entropy.  probs: (N, C), y: (N,) int labels."""
+def cross_entropy_loss(probs, y, class_weights=None):
+    """Mean cross-entropy with optional per-class weights."""
     n = len(y)
     log_p = np.log(probs[np.arange(n), y] + 1e-12)
+    if class_weights is not None:
+        w = class_weights[y]
+        return -(w * log_p).sum() / w.sum()
     return -log_p.mean()
 
 
@@ -171,14 +174,19 @@ class MLP:
         return a, cache                             # probs, cache
 
     # ---- backward ----
-    def backward(self, y, cache):
+    def backward(self, y, cache, class_weights=None):
         """Compute gradients via backprop.  Returns (dW_list, db_list)."""
         N = len(y)
         probs = cache["a"][-1]                      # (N, C)
         # Gradient of softmax + cross-entropy
         dz = probs.copy()
         dz[np.arange(N), y] -= 1.0
-        dz /= N                                     # (N, C)
+        if class_weights is not None:
+            w = class_weights[y]                     # (N,)
+            dz *= w[:, None]                         # weight each sample
+            dz /= w.sum()
+        else:
+            dz /= N                                  # (N, C)
 
         dW_list = [None] * len(self.W)
         db_list = [None] * len(self.W)
@@ -212,6 +220,14 @@ def train_model(X_train, y_train, X_val, y_val,
     model = MLP(layer_sizes)
     N = len(y_train)
 
+    # Compute inverse-frequency class weights for imbalanced data
+    n_classes = layer_sizes[-1]
+    class_counts = np.bincount(y_train, minlength=n_classes).astype(np.float64)
+    class_counts = np.maximum(class_counts, 1)  # avoid div by zero
+    class_weights = N / (n_classes * class_counts)
+    if not quiet:
+        print(f"  Class weights: {dict(enumerate(np.round(class_weights, 2)))}")
+
     best_val_acc = 0.0
     best_W = [w.copy() for w in model.W]
     best_b = [b.copy() for b in model.b]
@@ -228,10 +244,10 @@ def train_model(X_train, y_train, X_val, y_val,
             Xb = X_shuf[start:start + batch_size]
             yb = y_shuf[start:start + batch_size]
             probs, cache = model.forward(Xb)
-            loss = cross_entropy_loss(probs, yb)
+            loss = cross_entropy_loss(probs, yb, class_weights)
             epoch_loss += loss
             n_batches += 1
-            dW, db = model.backward(yb, cache)
+            dW, db = model.backward(yb, cache, class_weights)
             model.step(dW, db, lr)
 
         # LR decay

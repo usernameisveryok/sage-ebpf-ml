@@ -1,0 +1,87 @@
+{
+  "config": {
+    "hidden_size": 32,
+    "num_layers": 2,
+    "scale_bits": 12,
+    "class_weights": true,
+    "oversample_target": null,
+    "lr": 0.01,
+    "epochs": 80
+  },
+  "float_accuracy": 0.9344914978805209,
+  "float_macro_f1": 0.5647048152652027,
+  "float_min_recall": 0.9326012973506691,
+  "int_accuracy": 0.9352227700520708,
+  "int_macro_f1": 0.5656024680753062,
+  "int_min_recall": 0.9334672768989839,
+  "float_per_class": [
+    {
+      "class": 0,
+      "name": "BENIGN",
+      "precision": 0.9967756445467089,
+      "recall": 0.9326012973506691,
+      "f1": 0.9636211971701427,
+      "support": "494238"
+    },
+    {
+      "class": 1,
+      "name": "DDoS/DoS",
+      "precision": 0.8600827230810958,
+      "recall": 0.94541682712016,
+      "f1": 0.900733183816698,
+      "support": "80501"
+    },
+    {
+      "class": 2,
+      "name": "PortScan",
+      "precision": 0.0465095276799422,
+      "recall": 0.9735349716446124,
+      "f1": 0.08877779693156354,
+      "support": "529"
+    },
+    {
+      "class": 3,
+      "name": "BruteForce",
+      "precision": 0.18232614637109018,
+      "recall": 0.9452141057934509,
+      "f1": 0.3056870831424062,
+      "support": "3176"
+    }
+  ],
+  "int_per_class": [
+    {
+      "class": 0,
+      "name": "BENIGN",
+      "precision": 0.9967570907582488,
+      "recall": 0.9334672768989839,
+      "f1": 0.9640745841056365,
+      "support": "494238"
+    },
+    {
+      "class": 1,
+      "name": "DDoS/DoS",
+      "precision": 0.8624726588619287,
+      "recall": 0.9453547160904834,
+      "f1": 0.9020137728312533,
+      "support": "80501"
+    },
+    {
+      "class": 2,
+      "name": "PortScan",
+      "precision": 0.047083561894313404,
+      "recall": 0.9735349716446124,
+      "f1": 0.08982297026249236,
+      "support": "529"
+    },
+    {
+      "class": 3,
+      "name": "BruteForce",
+      "precision": 0.18290379577164442,
+      "recall": 0.9452141057934509,
+      "f1": 0.3064985451018429,
+      "support": "3176"
+    }
+  ],
+  "train_samples": 1735330,
+  "elapsed_s": 98.3
+}

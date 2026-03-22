@@ -1,0 +1,120 @@
+{
+  "architecture": [
+    12,
+    32,
+    32,
+    4
+  ],
+  "n_features": 12,
+  "scale_bits": 16,
+  "epochs": 80,
+  "oversample": 100000,
+  "metrics_float": {
+    "accuracy": 0.9219,
+    "macro_f1": 0.5364,
+    "per_class": [
+      {
+        "class": 0,
+        "precision": 0.9589,
+        "recall": 0.9527,
+        "f1": 0.9558,
+        "support": 494238
+      },
+      {
+        "class": 1,
+        "precision": 0.8645,
+        "recall": 0.7583,
+        "f1": 0.8079,
+        "support": 80501
+      },
+      {
+        "class": 2,
+        "precision": 0.0272,
+        "recall": 0.7127,
+        "f1": 0.0524,
+        "support": 529
+      },
+      {
+        "class": 3,
+        "precision": 0.3432,
+        "recall": 0.3168,
+        "f1": 0.3295,
+        "support": 3176
+      }
+    ]
+  },
+  "metrics_int": {
+    "accuracy": 0.9395,
+    "macro_f1": 0.5597,
+    "per_class": [
+      {
+        "class": 0,
+        "precision": 0.9585,
+        "recall": 0.9739,
+        "f1": 0.9661,
+        "support": 494238
+      },
+      {
+        "class": 1,
+        "precision": 0.8815,
+        "recall": 0.7548,
+        "f1": 0.8132,
+        "support": 80501
+      },
+      {
+        "class": 2,
+        "precision": 0.0755,
+        "recall": 0.62,
+        "f1": 0.1346,
+        "support": 529
+      },
+      {
+        "class": 3,
+        "precision": 0.3333,
+        "recall": 0.3168,
+        "f1": 0.3248,
+        "support": 3176
+      }
+    ]
+  },
+  "metrics_early_exit": {
+    "accuracy": 0.7586,
+    "macro_f1": 0.4066,
+    "per_class": [
+      {
+        "class": 0,
+        "precision": 0.9977,
+        "recall": 0.7235,
+        "f1": 0.8388,
+        "support": 494238
+      },
+      {
+        "class": 1,
+        "precision": 0.4625,
+        "recall": 0.9753,
+        "f1": 0.6274,
+        "support": 80501
+      },
+      {
+        "class": 2,
+        "precision": 0.0257,
+        "recall": 0.431,
+        "f1": 0.0485,
+        "support": 529
+      },
+      {
+        "class": 3,
+        "precision": 0.0602,
+        "recall": 0.7846,
+        "f1": 0.1117,
+        "support": 3176
+      }
+    ]
+  },
+  "early_exit_rate": 0.9792581477204362,
+  "early_exit_accuracy": 0.7549280955289648,
+  "exit_threshold_int": 506418,
+  "param_bits_full": 53248,
+  "param_bits_ternary": 18688,
+  "compression_ratio": 2.8
+}
