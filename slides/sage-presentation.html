@@ -1,0 +1,1275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SAGE — Safe Adaptive In-Kernel Neural Inference via eBPF</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+/* ===== RESET ===== */
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+/* ===== VIEWPORT BASE (required) ===== */
+html, body { height: 100%; overflow-x: hidden; }
+html { scroll-snap-type: y mandatory; scroll-behavior: smooth; }
+.slide { width: 100vw; height: 100vh; height: 100dvh; overflow: hidden; scroll-snap-align: start; display: flex; flex-direction: column; position: relative; }
+.slide-content { flex: 1; display: flex; flex-direction: column; justify-content: center; max-height: 100%; overflow: hidden; padding: var(--slide-padding); }
+:root {
+    --title-size: clamp(1.5rem, 5vw, 4rem);
+    --h2-size: clamp(1.25rem, 3.5vw, 2.5rem);
+    --h3-size: clamp(1rem, 2.5vw, 1.75rem);
+    --body-size: clamp(0.75rem, 1.5vw, 1.125rem);
+    --small-size: clamp(0.65rem, 1vw, 0.875rem);
+    --slide-padding: clamp(1rem, 4vw, 4rem);
+    --content-gap: clamp(0.5rem, 2vw, 2rem);
+    --element-gap: clamp(0.25rem, 1vw, 1rem);
+    /* Theme colors */
+    --bg: #0d1117;
+    --bg-light: #161b22;
+    --green: #39d353;
+    --green-dim: #238636;
+    --cyan: #58a6ff;
+    --text: #c9d1d9;
+    --text-dim: #8b949e;
+    --border: #30363d;
+    --red: #f85149;
+}
+.card, .container, .content-box { max-width: min(90vw, 1000px); max-height: min(80vh, 700px); }
+.feature-list, .bullet-list { gap: clamp(0.4rem, 1vh, 1rem); }
+.feature-list li, .bullet-list li { font-size: var(--body-size); line-height: 1.4; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr)); gap: clamp(0.5rem, 1.5vw, 1rem); }
+img, .image-container { max-width: 100%; max-height: min(50vh, 400px); object-fit: contain; }
+@media (max-height: 700px) { :root { --slide-padding: clamp(0.75rem, 3vw, 2rem); --content-gap: clamp(0.4rem, 1.5vw, 1rem); --title-size: clamp(1.25rem, 4.5vw, 2.5rem); --h2-size: clamp(1rem, 3vw, 1.75rem); } }
+@media (max-height: 600px) { :root { --slide-padding: clamp(0.5rem, 2.5vw, 1.5rem); --content-gap: clamp(0.3rem, 1vw, 0.75rem); --title-size: clamp(1.1rem, 4vw, 2rem); --body-size: clamp(0.7rem, 1.2vw, 0.95rem); } .nav-dots, .keyboard-hint, .decorative { display: none; } }
+@media (max-height: 500px) { :root { --slide-padding: clamp(0.4rem, 2vw, 1rem); --title-size: clamp(1rem, 3.5vw, 1.5rem); --h2-size: clamp(0.9rem, 2.5vw, 1.25rem); --body-size: clamp(0.65rem, 1vw, 0.85rem); } }
+@media (max-width: 600px) { :root { --title-size: clamp(1.25rem, 7vw, 2.5rem); } .grid { grid-template-columns: 1fr; } }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.2s !important; } html { scroll-behavior: auto; } }
+
+/* ===== GLOBAL THEME ===== */
+body {
+    font-family: 'JetBrains Mono', monospace;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.5;
+}
+
+/* ===== SCAN LINES OVERLAY ===== */
+.slide::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: repeating-linear-gradient(
+        0deg,
+        transparent,
+        transparent 2px,
+        rgba(0, 0, 0, 0.08) 2px,
+        rgba(0, 0, 0, 0.08) 4px
+    );
+    pointer-events: none;
+    z-index: 10;
+}
+
+/* ===== GRID PATTERN BACKGROUND ===== */
+.slide::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background-image:
+        linear-gradient(rgba(57, 211, 83, 0.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(57, 211, 83, 0.03) 1px, transparent 1px);
+    background-size: 60px 60px;
+    pointer-events: none;
+    z-index: 0;
+}
+
+.slide-content { z-index: 5; position: relative; }
+
+/* ===== TYPOGRAPHY ===== */
+h1 { font-size: var(--title-size); font-weight: 800; color: var(--green); letter-spacing: -0.02em; }
+h2 { font-size: var(--h2-size); font-weight: 700; color: var(--green); margin-bottom: var(--content-gap); }
+h3 { font-size: var(--h3-size); font-weight: 600; color: var(--cyan); }
+p, li { font-size: var(--body-size); color: var(--text); }
+.small { font-size: var(--small-size); color: var(--text-dim); }
+.green { color: var(--green); }
+.cyan { color: var(--cyan); }
+.red { color: var(--red); }
+.dim { color: var(--text-dim); }
+
+/* ===== BLINKING CURSOR ===== */
+@keyframes blink {
+    0%, 50% { opacity: 1; }
+    51%, 100% { opacity: 0; }
+}
+.cursor {
+    display: inline-block;
+    width: clamp(2px, 0.3vw, 4px);
+    height: 1em;
+    background: var(--green);
+    animation: blink 1s step-end infinite;
+    vertical-align: text-bottom;
+    margin-left: 4px;
+}
+
+/* ===== REVEAL ANIMATIONS ===== */
+@keyframes fadeUp {
+    from { opacity: 0; transform: translateY(30px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+@keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+@keyframes typeIn {
+    from { opacity: 0; transform: translateX(-10px); }
+    to { opacity: 1; transform: translateX(0); }
+}
+@keyframes glowPulse {
+    0%, 100% { text-shadow: 0 0 10px rgba(57, 211, 83, 0.3); }
+    50% { text-shadow: 0 0 25px rgba(57, 211, 83, 0.6), 0 0 50px rgba(57, 211, 83, 0.2); }
+}
+
+.reveal {
+    opacity: 0;
+    transform: translateY(30px);
+    transition: opacity 0.6s ease, transform 0.6s ease;
+}
+.reveal.visible {
+    opacity: 1;
+    transform: translateY(0);
+}
+.reveal.visible .stagger { animation: fadeUp 0.5s ease forwards; opacity: 0; }
+.reveal.visible .stagger:nth-child(1) { animation-delay: 0.1s; }
+.reveal.visible .stagger:nth-child(2) { animation-delay: 0.2s; }
+.reveal.visible .stagger:nth-child(3) { animation-delay: 0.3s; }
+.reveal.visible .stagger:nth-child(4) { animation-delay: 0.4s; }
+.reveal.visible .stagger:nth-child(5) { animation-delay: 0.5s; }
+.reveal.visible .stagger:nth-child(6) { animation-delay: 0.6s; }
+.reveal.visible .stagger:nth-child(7) { animation-delay: 0.7s; }
+.reveal.visible .stagger:nth-child(8) { animation-delay: 0.8s; }
+
+/* ===== PROGRESS BAR ===== */
+#progress-bar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    height: 3px;
+    background: linear-gradient(90deg, var(--green), var(--cyan));
+    z-index: 1000;
+    transition: width 0.3s ease;
+    box-shadow: 0 0 10px rgba(57, 211, 83, 0.5);
+}
+
+/* ===== NAV DOTS ===== */
+.nav-dots {
+    position: fixed;
+    right: clamp(8px, 1.5vw, 20px);
+    top: 50%;
+    transform: translateY(-50%);
+    display: flex;
+    flex-direction: column;
+    gap: clamp(6px, 0.8vh, 12px);
+    z-index: 1000;
+}
+.nav-dot {
+    width: clamp(6px, 0.6vw, 10px);
+    height: clamp(6px, 0.6vw, 10px);
+    border-radius: 50%;
+    border: 1.5px solid var(--green);
+    background: transparent;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    padding: 0;
+}
+.nav-dot:hover { background: rgba(57, 211, 83, 0.4); }
+.nav-dot.active {
+    background: var(--green);
+    box-shadow: 0 0 8px rgba(57, 211, 83, 0.6);
+}
+
+/* ===== KEYBOARD HINT ===== */
+.keyboard-hint {
+    position: fixed;
+    bottom: clamp(8px, 1.5vh, 20px);
+    right: clamp(8px, 1.5vw, 20px);
+    font-size: var(--small-size);
+    color: var(--text-dim);
+    z-index: 1000;
+    opacity: 0.5;
+}
+.keyboard-hint kbd {
+    display: inline-block;
+    padding: 2px 6px;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    background: var(--bg-light);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: inherit;
+}
+
+/* ===== SLIDE-SPECIFIC STYLES ===== */
+
+/* --- Title Slide --- */
+.title-slide .slide-content {
+    align-items: center;
+    text-align: center;
+    gap: var(--content-gap);
+}
+.title-mega {
+    font-size: clamp(3rem, 12vw, 10rem);
+    font-weight: 800;
+    color: var(--green);
+    letter-spacing: -0.04em;
+    line-height: 1;
+    animation: glowPulse 3s ease-in-out infinite;
+}
+.title-sub {
+    font-size: clamp(0.8rem, 1.8vw, 1.3rem);
+    color: var(--text);
+    font-weight: 400;
+    max-width: 700px;
+    letter-spacing: 0.05em;
+}
+.title-tagline {
+    font-size: clamp(0.7rem, 1.3vw, 1rem);
+    color: var(--cyan);
+    font-weight: 500;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+}
+.terminal-prompt {
+    font-size: clamp(0.7rem, 1.2vw, 0.95rem);
+    color: var(--text-dim);
+    background: rgba(22, 27, 34, 0.8);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: clamp(8px, 1vw, 16px) clamp(12px, 2vw, 24px);
+    margin-top: var(--element-gap);
+}
+.terminal-prompt .prompt-char { color: var(--green); }
+.terminal-prompt .cmd { color: var(--cyan); }
+.terminal-prompt .flag { color: var(--text); }
+
+/* --- Content Card --- */
+.content-card {
+    background: rgba(22, 27, 34, 0.6);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: clamp(12px, 2vw, 24px);
+}
+
+/* --- Constraint Grid --- */
+.constraint-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr));
+    gap: clamp(8px, 1.2vw, 16px);
+}
+.constraint-box {
+    background: rgba(22, 27, 34, 0.8);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: clamp(10px, 1.5vw, 20px);
+    text-align: center;
+    transition: border-color 0.3s ease, box-shadow 0.3s ease;
+}
+.constraint-box:hover {
+    border-color: var(--red);
+    box-shadow: 0 0 20px rgba(248, 81, 73, 0.15);
+}
+.constraint-icon {
+    font-size: clamp(1.2rem, 2.5vw, 2rem);
+    display: block;
+    margin-bottom: clamp(4px, 0.5vh, 8px);
+}
+.constraint-label {
+    font-size: clamp(0.65rem, 1.1vw, 0.9rem);
+    color: var(--text);
+    font-weight: 500;
+}
+
+/* --- Contribution Cards --- */
+.contrib-cards {
+    display: flex;
+    flex-direction: column;
+    gap: clamp(10px, 1.5vh, 20px);
+    width: min(90vw, 900px);
+    margin: 0 auto;
+}
+.contrib-card {
+    display: flex;
+    align-items: flex-start;
+    gap: clamp(12px, 2vw, 24px);
+    background: rgba(22, 27, 34, 0.7);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: clamp(12px, 2vw, 24px);
+    transition: border-color 0.3s ease, box-shadow 0.3s ease;
+}
+.contrib-card:hover {
+    border-color: var(--green);
+    box-shadow: 0 0 25px rgba(57, 211, 83, 0.1);
+}
+.contrib-num {
+    font-size: clamp(1.5rem, 3vw, 2.5rem);
+    font-weight: 800;
+    color: var(--green);
+    line-height: 1;
+    opacity: 0.6;
+    flex-shrink: 0;
+}
+.contrib-body h3 {
+    font-size: clamp(0.85rem, 1.6vw, 1.2rem);
+    margin-bottom: clamp(2px, 0.3vh, 6px);
+}
+.contrib-body p {
+    font-size: clamp(0.7rem, 1.2vw, 0.95rem);
+    color: var(--text-dim);
+}
+
+/* --- Formula / Theorem --- */
+.formula-block {
+    background: rgba(22, 27, 34, 0.9);
+    border: 1px solid var(--green);
+    border-radius: 8px;
+    padding: clamp(16px, 2.5vw, 32px);
+    text-align: center;
+    position: relative;
+    max-width: min(90vw, 800px);
+    margin: 0 auto;
+}
+.formula-block::before {
+    content: 'THEOREM';
+    position: absolute;
+    top: -1px;
+    left: clamp(12px, 2vw, 24px);
+    background: var(--bg);
+    padding: 0 8px;
+    font-size: clamp(0.55rem, 0.8vw, 0.7rem);
+    color: var(--green);
+    letter-spacing: 0.15em;
+    transform: translateY(-50%);
+}
+.formula {
+    font-size: clamp(1rem, 2.5vw, 2rem);
+    font-weight: 700;
+    color: var(--green);
+    margin: clamp(8px, 1vh, 16px) 0;
+}
+
+/* --- Insight boxes --- */
+.insight-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: clamp(8px, 1.5vw, 16px);
+    max-width: min(90vw, 800px);
+    margin: 0 auto;
+}
+@media (max-width: 600px) { .insight-row { grid-template-columns: 1fr; } }
+.insight-box {
+    padding: clamp(10px, 1.5vw, 20px);
+    border-radius: 8px;
+    border: 1px solid var(--border);
+}
+.insight-box.danger {
+    border-color: var(--red);
+    background: rgba(248, 81, 73, 0.05);
+}
+.insight-box.success {
+    border-color: var(--green);
+    background: rgba(57, 211, 83, 0.05);
+}
+.insight-label {
+    font-size: clamp(0.6rem, 0.9vw, 0.75rem);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    margin-bottom: clamp(4px, 0.5vh, 8px);
+    font-weight: 600;
+}
+.insight-value {
+    font-size: clamp(0.85rem, 1.5vw, 1.15rem);
+    font-weight: 600;
+}
+
+/* --- Bar visual --- */
+.bar-compare {
+    display: flex;
+    flex-direction: column;
+    gap: clamp(6px, 1vh, 12px);
+    max-width: min(90vw, 700px);
+    margin: 0 auto;
+}
+.bar-row {
+    display: flex;
+    align-items: center;
+    gap: clamp(8px, 1vw, 16px);
+}
+.bar-label {
+    font-size: clamp(0.6rem, 1vw, 0.8rem);
+    color: var(--text-dim);
+    min-width: clamp(60px, 10vw, 120px);
+    text-align: right;
+    flex-shrink: 0;
+}
+.bar-track {
+    flex: 1;
+    height: clamp(16px, 2vh, 28px);
+    background: var(--bg-light);
+    border-radius: 4px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+}
+.bar-fill {
+    height: 100%;
+    border-radius: 4px;
+    transition: width 1s ease;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    padding-right: clamp(4px, 0.5vw, 8px);
+    font-size: clamp(0.55rem, 0.8vw, 0.7rem);
+    font-weight: 600;
+    color: var(--bg);
+}
+.bar-fill.green-bar { background: linear-gradient(90deg, var(--green-dim), var(--green)); }
+.bar-fill.red-bar { background: linear-gradient(90deg, var(--red), #da3633); }
+
+/* --- Data Table --- */
+.data-table {
+    width: min(90vw, 850px);
+    margin: 0 auto;
+    border-collapse: collapse;
+    font-size: clamp(0.6rem, 1.1vw, 0.9rem);
+}
+.data-table th {
+    text-align: left;
+    padding: clamp(6px, 1vh, 12px) clamp(8px, 1vw, 16px);
+    border-bottom: 2px solid var(--green);
+    color: var(--green);
+    font-weight: 600;
+    font-size: clamp(0.6rem, 1vw, 0.85rem);
+}
+.data-table td {
+    padding: clamp(6px, 0.8vh, 10px) clamp(8px, 1vw, 16px);
+    border-bottom: 1px solid var(--border);
+    color: var(--text);
+}
+.data-table tr:last-child td { border-bottom: none; }
+.data-table tr.highlight td {
+    color: var(--green);
+    font-weight: 600;
+    background: rgba(57, 211, 83, 0.06);
+}
+.data-table .tag {
+    display: inline-block;
+    font-size: clamp(0.5rem, 0.7vw, 0.65rem);
+    padding: 1px 6px;
+    border-radius: 3px;
+    border: 1px solid var(--green);
+    color: var(--green);
+    margin-left: 6px;
+    vertical-align: middle;
+}
+
+/* --- Pipeline --- */
+.pipeline {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0;
+    flex-wrap: wrap;
+    max-width: min(95vw, 950px);
+    margin: 0 auto;
+}
+.pipe-stage {
+    background: rgba(22, 27, 34, 0.9);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: clamp(8px, 1.2vw, 16px) clamp(10px, 1.5vw, 20px);
+    text-align: center;
+    transition: border-color 0.3s ease;
+    flex-shrink: 0;
+}
+.pipe-stage:hover { border-color: var(--green); }
+.pipe-stage-name {
+    font-size: clamp(0.65rem, 1.1vw, 0.9rem);
+    font-weight: 600;
+    color: var(--cyan);
+}
+.pipe-stage-detail {
+    font-size: clamp(0.55rem, 0.8vw, 0.7rem);
+    color: var(--text-dim);
+    margin-top: 2px;
+}
+.pipe-arrow {
+    font-size: clamp(0.9rem, 1.5vw, 1.4rem);
+    color: var(--green);
+    padding: 0 clamp(4px, 0.6vw, 10px);
+    flex-shrink: 0;
+}
+
+/* --- Big number --- */
+.big-number {
+    font-size: clamp(3rem, 10vw, 8rem);
+    font-weight: 800;
+    color: var(--green);
+    line-height: 1;
+    text-align: center;
+    animation: glowPulse 3s ease-in-out infinite;
+}
+.big-label {
+    font-size: clamp(0.9rem, 1.8vw, 1.3rem);
+    color: var(--text-dim);
+    text-align: center;
+    font-weight: 400;
+}
+
+/* --- Stats row --- */
+.stats-row {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: clamp(12px, 2vw, 28px);
+}
+.stat-item {
+    text-align: center;
+    padding: clamp(8px, 1vw, 16px);
+    background: rgba(22, 27, 34, 0.7);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    min-width: clamp(80px, 12vw, 140px);
+}
+.stat-value {
+    font-size: clamp(0.9rem, 1.8vw, 1.4rem);
+    font-weight: 700;
+    color: var(--cyan);
+}
+.stat-label {
+    font-size: clamp(0.55rem, 0.8vw, 0.7rem);
+    color: var(--text-dim);
+    margin-top: 2px;
+}
+
+/* --- Takeaway list --- */
+.takeaway-list {
+    display: flex;
+    flex-direction: column;
+    gap: clamp(12px, 2vh, 24px);
+    max-width: min(90vw, 800px);
+    margin: 0 auto;
+    list-style: none;
+}
+.takeaway-item {
+    display: flex;
+    align-items: flex-start;
+    gap: clamp(10px, 1.5vw, 20px);
+    padding: clamp(12px, 2vw, 24px);
+    background: rgba(22, 27, 34, 0.7);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    border-left: 3px solid var(--green);
+}
+.takeaway-check {
+    font-size: clamp(1rem, 2vw, 1.6rem);
+    color: var(--green);
+    flex-shrink: 0;
+    line-height: 1.3;
+}
+.takeaway-text {
+    font-size: clamp(0.75rem, 1.3vw, 1.05rem);
+    color: var(--text);
+    line-height: 1.5;
+}
+
+/* --- End Slide --- */
+.end-slide .slide-content {
+    align-items: center;
+    text-align: center;
+    gap: var(--content-gap);
+}
+.end-title {
+    font-size: clamp(2rem, 7vw, 5rem);
+    font-weight: 800;
+    color: var(--green);
+    animation: glowPulse 3s ease-in-out infinite;
+}
+.gh-link {
+    font-size: clamp(0.65rem, 1.1vw, 0.9rem);
+    color: var(--cyan);
+    text-decoration: none;
+    border: 1px solid var(--border);
+    padding: clamp(6px, 1vw, 12px) clamp(12px, 2vw, 24px);
+    border-radius: 6px;
+    background: rgba(22, 27, 34, 0.6);
+    transition: border-color 0.3s ease;
+}
+.gh-link:hover { border-color: var(--cyan); }
+
+/* --- Exploration mini data --- */
+.mini-data-row {
+    display: flex;
+    align-items: center;
+    gap: clamp(8px, 1vw, 16px);
+    padding: clamp(4px, 0.6vh, 8px) 0;
+}
+.mini-data-label {
+    font-size: clamp(0.65rem, 1vw, 0.85rem);
+    color: var(--text-dim);
+    min-width: clamp(40px, 6vw, 60px);
+    text-align: right;
+    font-weight: 500;
+}
+.mini-data-bar {
+    flex: 1;
+    height: clamp(20px, 2.5vh, 32px);
+    background: var(--bg-light);
+    border-radius: 4px;
+    overflow: hidden;
+    position: relative;
+    border: 1px solid var(--border);
+}
+.mini-data-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--green-dim), var(--green));
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    padding-right: clamp(4px, 0.5vw, 8px);
+    font-size: clamp(0.55rem, 0.8vw, 0.7rem);
+    font-weight: 600;
+    color: var(--bg);
+    transition: width 0.8s ease;
+}
+.mini-data-fill.critical {
+    background: linear-gradient(90deg, var(--cyan), var(--green));
+    box-shadow: 0 0 10px rgba(57, 211, 83, 0.3);
+}
+
+/* --- Latency compare --- */
+.latency-compare {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    gap: clamp(10px, 2vw, 24px);
+    align-items: center;
+    max-width: min(90vw, 800px);
+    margin: 0 auto;
+}
+.latency-box {
+    background: rgba(22, 27, 34, 0.8);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: clamp(16px, 2.5vw, 32px);
+    text-align: center;
+}
+.latency-box.kernel-box { border-color: var(--green); }
+.latency-box.user-box { border-color: var(--red); }
+.latency-zone {
+    font-size: clamp(0.6rem, 0.9vw, 0.75rem);
+    text-transform: uppercase;
+    letter-spacing: 0.15em;
+    margin-bottom: clamp(6px, 1vh, 12px);
+    font-weight: 600;
+}
+.latency-number {
+    font-size: clamp(1.5rem, 4vw, 3rem);
+    font-weight: 800;
+    line-height: 1.1;
+}
+.latency-unit {
+    font-size: clamp(0.7rem, 1.1vw, 0.9rem);
+    font-weight: 400;
+}
+.vs-badge {
+    font-size: clamp(1rem, 2vw, 1.5rem);
+    font-weight: 800;
+    color: var(--text-dim);
+}
+
+/* --- Constraint tagline --- */
+.slide-tagline {
+    font-size: clamp(0.8rem, 1.5vw, 1.1rem);
+    color: var(--cyan);
+    text-align: center;
+    font-style: italic;
+    margin-top: var(--element-gap);
+}
+
+/* --- Exploration highlight --- */
+.finding-highlight {
+    background: rgba(57, 211, 83, 0.08);
+    border: 1px solid var(--green);
+    border-radius: 8px;
+    padding: clamp(10px, 1.5vw, 20px);
+    text-align: center;
+    max-width: min(90vw, 600px);
+    margin: 0 auto;
+}
+.finding-highlight p {
+    font-size: clamp(0.75rem, 1.3vw, 1rem);
+    color: var(--green);
+    font-weight: 600;
+}
+
+/* -- slide number -- */
+.slide-num {
+    position: absolute;
+    bottom: clamp(8px, 1.5vh, 16px);
+    left: clamp(8px, 1.5vw, 20px);
+    font-size: var(--small-size);
+    color: var(--text-dim);
+    opacity: 0.4;
+    z-index: 20;
+}
+</style>
+</head>
+<body>
+
+<!-- Progress Bar -->
+<div id="progress-bar" style="width: 0%"></div>
+
+<!-- Navigation Dots -->
+<nav class="nav-dots" id="nav-dots"></nav>
+
+<!-- Keyboard Hint -->
+<div class="keyboard-hint decorative">
+    <kbd>↑</kbd><kbd>↓</kbd> navigate
+</div>
+
+<!-- ============================================================ -->
+<!-- SLIDE 1: Title -->
+<!-- ============================================================ -->
+<section class="slide title-slide" id="slide-1">
+    <div class="slide-content reveal">
+        <div class="title-tagline stagger" style="margin-bottom: var(--element-gap);">Real-Time Network Intrusion Detection</div>
+        <h1 class="title-mega stagger">SAGE<span class="cursor"></span></h1>
+        <p class="title-sub stagger">Safe Adaptive In-Kernel Neural Inference via eBPF</p>
+        <div class="terminal-prompt stagger">
+            <span class="prompt-char">$</span> <span class="cmd">sudo</span> <span class="flag">./sage --attach eth0</span><span class="cursor"></span>
+        </div>
+    </div>
+    <div class="slide-num">01 / 12</div>
+</section>
+
+<!-- ============================================================ -->
+<!-- SLIDE 2: The Problem -->
+<!-- ============================================================ -->
+<section class="slide" id="slide-2">
+    <div class="slide-content reveal">
+        <h2 class="stagger">The Problem</h2>
+        <ul class="bullet-list" style="list-style: none; max-width: min(90vw, 750px); margin: 0 auto var(--content-gap);">
+            <li class="stagger" style="padding: clamp(4px, 0.5vh, 8px) 0;"><span class="green">▸</span> Modern DDoS attacks exceed <span class="cyan">hundreds of Gbps</span></li>
+            <li class="stagger" style="padding: clamp(4px, 0.5vh, 8px) 0;"><span class="green">▸</span> User-space ML pipelines: <span class="red">too slow</span> — milliseconds per packet</li>
+            <li class="stagger" style="padding: clamp(4px, 0.5vh, 8px) 0;"><span class="green">▸</span> Need: <span class="green">microsecond-level</span> packet classification at line rate</li>
+        </ul>
+        <div class="latency-compare stagger">
+            <div class="latency-box kernel-box">
+                <div class="latency-zone green">Kernel Space</div>
+                <div class="latency-number green">~1<span class="latency-unit"> μs</span></div>
+                <div class="small" style="margin-top: 4px;">XDP / eBPF hook</div>
+            </div>
+            <div class="vs-badge">vs</div>
+            <div class="latency-box user-box">
+                <div class="latency-zone red">User Space</div>
+                <div class="latency-number red">~5<span class="latency-unit"> ms</span></div>
+                <div class="small" style="margin-top: 4px;">Context switch + ML</div>
+            </div>
+        </div>
+    </div>
+    <div class="slide-num">02 / 12</div>
+</section>
+
+<!-- ============================================================ -->
+<!-- SLIDE 3: eBPF Constraints -->
+<!-- ============================================================ -->
+<section class="slide" id="slide-3">
+    <div class="slide-content reveal" style="align-items: center;">
+        <h2 class="stagger">eBPF: Power with Constraints</h2>
+        <div class="constraint-grid" style="max-width: min(90vw, 800px);">
+            <div class="constraint-box stagger">
+                <span class="constraint-icon">❌</span>
+                <span class="constraint-label">No floating point</span>
+            </div>
+            <div class="constraint-box stagger">
+                <span class="constraint-icon">❌</span>
+                <span class="constraint-label">512B stack limit</span>
+            </div>
+            <div class="constraint-box stagger">
+                <span class="constraint-icon">❌</span>
+                <span class="constraint-label">1M instruction limit</span>
+            </div>
+            <div class="constraint-box stagger">
+                <span class="constraint-icon">❌</span>
+                <span class="constraint-label">No dynamic allocation</span>
+            </div>
+            <div class="constraint-box stagger">
+                <span class="constraint-icon">❌</span>
+                <span class="constraint-label">No signed division</span>
+            </div>
+        </div>
+        <p class="slide-tagline stagger">"How do you fit a neural network in here?"</p>
+    </div>
+    <div class="slide-num">03 / 12</div>
+</section>
+
+<!-- ============================================================ -->
+<!-- SLIDE 4: Three Contributions -->
+<!-- ============================================================ -->
+<section class="slide" id="slide-4">
+    <div class="slide-content reveal" style="align-items: center;">
+        <h2 class="stagger">Three Contributions</h2>
+        <div class="contrib-cards">
+            <div class="contrib-card stagger">
+                <div class="contrib-num">01</div>
+                <div class="contrib-body">
+                    <h3>Formal Overflow Safety</h3>
+                    <p>Closed-form theorem for int64 accumulator safety bounds</p>
+                </div>
+            </div>
+            <div class="contrib-card stagger">
+                <div class="contrib-num">02</div>
+                <div class="contrib-body">
+                    <h3>Design Space Exploration</h3>
+                    <p>48 configurations, Pareto-front analysis for accuracy vs resources</p>
+                </div>
+            </div>
+            <div class="contrib-card stagger">
+                <div class="contrib-num">03</div>
+                <div class="contrib-body">
+                    <h3>End-to-End System</h3>
+                    <p>4-class IDS deployed in XDP, 806 BPF instructions, 1.8KB model</p>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="slide-num">04 / 12</div>
+</section>
+
+<!-- ============================================================ -->
+<!-- SLIDE 5: Overflow Safety Theorem -->
+<!-- ============================================================ -->
+<section class="slide" id="slide-5">
+    <div class="slide-content reveal" style="align-items: center; gap: var(--content-gap);">
+        <h2 class="stagger">01 — Overflow Safety</h2>
+        <div class="formula-block stagger">
+            <div class="formula">b ≤ ⌊(63 − log₂ C<sub>k</sub>) / 2⌋</div>
+            <p class="small" style="margin-top: 8px;">where C<sub>k</sub> = max fan-in at layer k, b = scale factor bits</p>
+        </div>
+        <div class="insight-row stagger">
+            <div class="insight-box danger">
+                <div class="insight-label red">⚠ Theory Says</div>
+                <div class="insight-value red">b=16 is UNSAFE</div>
+                <p class="small" style="margin-top: 4px;">b<sub>max</sub> = 14 for safe guarantee</p>
+            </div>
+            <div class="insight-box success">
+                <div class="insight-label green">✓ Empirical Reality</div>
+                <div class="insight-value green">5,590× headroom</div>
+                <p class="small" style="margin-top: 4px;">Actual max ≪ theoretical max</p>
+            </div>
+        </div>
+        <div class="bar-compare stagger" style="margin-top: var(--element-gap);">
+            <div class="bar-row">
+                <div class="bar-label">Theoretical max</div>
+                <div class="bar-track"><div class="bar-fill red-bar" style="width: 100%">2⁶³</div></div>
+            </div>
+            <div class="bar-row">
+                <div class="bar-label">Actual max</div>
+                <div class="bar-track"><div class="bar-fill green-bar" style="width: 12%">12.4 bits</div></div>
+            </div>
+        </div>
+    </div>
+    <div class="slide-num">05 / 12</div>
+</section>
+
+<!-- ============================================================ -->
+<!-- SLIDE 6: Design Space Exploration -->
+<!-- ============================================================ -->
+<section class="slide" id="slide-6">
+    <div class="slide-content reveal" style="align-items: center; gap: var(--content-gap);">
+        <h2 class="stagger">02 — 48-Config Exploration</h2>
+        <p class="stagger" style="text-align: center; color: var(--text-dim); font-size: var(--body-size);">
+            Search space: <span class="cyan">hidden_size</span> × <span class="cyan">layers</span> × <span class="cyan">scale_bits</span>
+        </p>
+        <div style="max-width: min(90vw, 600px); margin: 0 auto; width: 100%;" class="stagger">
+            <div class="mini-data-row">
+                <div class="mini-data-label">b=8</div>
+                <div class="mini-data-bar"><div class="mini-data-fill" style="width: 72%">72%</div></div>
+            </div>
+            <div class="mini-data-row">
+                <div class="mini-data-label">b=12</div>
+                <div class="mini-data-bar"><div class="mini-data-fill" style="width: 89%">89%</div></div>
+            </div>
+            <div class="mini-data-row">
+                <div class="mini-data-label">b=16</div>
+                <div class="mini-data-bar"><div class="mini-data-fill critical" style="width: 99.6%">99.6%</div></div>
+            </div>
+            <div class="mini-data-row">
+                <div class="mini-data-label">b=20</div>
+                <div class="mini-data-bar"><div class="mini-data-fill" style="width: 99.6%">99.6%</div></div>
+            </div>
+        </div>
+        <div class="finding-highlight stagger">
+            <p>b=16 is the critical threshold — <span class="dim">accuracy saturates beyond this point</span></p>
+        </div>
+        <p class="small stagger" style="text-align: center;">Finding: h=8 already saturates at 99.6% accuracy</p>
+    </div>
+    <div class="slide-num">06 / 12</div>
+</section>
+
+<!-- ============================================================ -->
+<!-- SLIDE 7: Pareto Front -->
+<!-- ============================================================ -->
+<section class="slide" id="slide-7">
+    <div class="slide-content reveal" style="align-items: center; gap: var(--content-gap);">
+        <h2 class="stagger">Pareto Optimal</h2>
+        <table class="data-table stagger">
+            <thead>
+                <tr>
+                    <th>Config</th>
+                    <th>Accuracy</th>
+                    <th>Instructions</th>
+                    <th>Memory</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>h=8</td>
+                    <td>99.6%</td>
+                    <td>754</td>
+                    <td>656B</td>
+                    <td><span class="tag">smallest</span></td>
+                </tr>
+                <tr class="highlight">
+                    <td>h=16</td>
+                    <td>99.6%</td>
+                    <td>754</td>
+                    <td>1.8KB</td>
+                    <td><span class="tag">sweet spot</span></td>
+                </tr>
+                <tr>
+                    <td>h=32</td>
+                    <td>99.6%</td>
+                    <td>806</td>
+                    <td>5.6KB</td>
+                    <td></td>
+                </tr>
+                <tr>
+                    <td>h=64</td>
+                    <td>99.6%</td>
+                    <td>806</td>
+                    <td>19.5KB</td>
+                    <td></td>
+                </tr>
+            </tbody>
+        </table>
+        <div class="finding-highlight stagger">
+            <p>30× less memory, same accuracy</p>
+        </div>
+    </div>
+    <div class="slide-num">07 / 12</div>
+</section>
+
+<!-- ============================================================ -->
+<!-- SLIDE 8: System Architecture -->
+<!-- ============================================================ -->
+<section class="slide" id="slide-8">
+    <div class="slide-content reveal" style="align-items: center; gap: var(--content-gap);">
+        <h2 class="stagger">03 — Four-Stage Tail-Call Pipeline</h2>
+        <div class="pipeline stagger">
+            <div class="pipe-stage">
+                <div class="pipe-stage-name">Packet</div>
+                <div class="pipe-stage-detail">ingress</div>
+            </div>
+            <div class="pipe-arrow">→</div>
+            <div class="pipe-stage">
+                <div class="pipe-stage-name">Entry</div>
+                <div class="pipe-stage-detail">309 instrs</div>
+            </div>
+            <div class="pipe-arrow">→</div>
+            <div class="pipe-stage">
+                <div class="pipe-stage-name">Layer 0</div>
+                <div class="pipe-stage-detail">109 instrs</div>
+            </div>
+            <div class="pipe-arrow">→</div>
+            <div class="pipe-stage">
+                <div class="pipe-stage-name">Layer 1</div>
+                <div class="pipe-stage-detail">152 instrs</div>
+            </div>
+            <div class="pipe-arrow">→</div>
+            <div class="pipe-stage">
+                <div class="pipe-stage-name">Layer 2</div>
+                <div class="pipe-stage-detail">236 instrs</div>
+            </div>
+            <div class="pipe-arrow">→</div>
+            <div class="pipe-stage" style="border-color: var(--green);">
+                <div class="pipe-stage-name green">PASS / DROP</div>
+                <div class="pipe-stage-detail">XDP action</div>
+            </div>
+        </div>
+        <div class="stats-row stagger" style="margin-top: var(--element-gap);">
+            <div class="stat-item">
+                <div class="stat-value">Per-CPU</div>
+                <div class="stat-label">Scratch Map</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-value">Zero</div>
+                <div class="stat-label">Lock Contention</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-value">806</div>
+                <div class="stat-label">Total Instructions</div>
+            </div>
+        </div>
+    </div>
+    <div class="slide-num">08 / 12</div>
+</section>
+
+<!-- ============================================================ -->
+<!-- SLIDE 9: Results -->
+<!-- ============================================================ -->
+<section class="slide" id="slide-9">
+    <div class="slide-content reveal" style="align-items: center; gap: var(--content-gap);">
+        <h2 class="stagger">Results</h2>
+        <div class="stagger">
+            <div class="big-number">99.6%</div>
+            <div class="big-label">Classification Accuracy</div>
+        </div>
+        <div class="stats-row stagger">
+            <div class="stat-item">
+                <div class="stat-value">4</div>
+                <div class="stat-label">Classes</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-value">200K</div>
+                <div class="stat-label">Samples</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-value">0.98</div>
+                <div class="stat-label">Macro-F1</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-value">754</div>
+                <div class="stat-label">BPF Instrs</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-value">1.8KB</div>
+                <div class="stat-label">Model Memory</div>
+            </div>
+        </div>
+        <p class="small stagger" style="text-align:center;">Benign · DDoS · PortScan · BruteForce</p>
+    </div>
+    <div class="slide-num">09 / 12</div>
+</section>
+
+<!-- ============================================================ -->
+<!-- SLIDE 10: Comparison -->
+<!-- ============================================================ -->
+<section class="slide" id="slide-10">
+    <div class="slide-content reveal" style="align-items: center; gap: var(--content-gap);">
+        <h2 class="stagger">vs. Prior Work</h2>
+        <table class="data-table stagger">
+            <thead>
+                <tr>
+                    <th>System</th>
+                    <th>Classes</th>
+                    <th>Accuracy</th>
+                    <th>Memory</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>DT-eBPF</td>
+                    <td>2</td>
+                    <td>99%</td>
+                    <td>32KB+</td>
+                </tr>
+                <tr>
+                    <td>NN-int8</td>
+                    <td>2</td>
+                    <td>~95%</td>
+                    <td>~2KB</td>
+                </tr>
+                <tr>
+                    <td>NN-eBPF</td>
+                    <td>2</td>
+                    <td>99.2%</td>
+                    <td>5KB</td>
+                </tr>
+                <tr class="highlight">
+                    <td>SAGE (ours)</td>
+                    <td><strong>4</strong></td>
+                    <td><strong>99.6%</strong></td>
+                    <td><strong>1.8KB</strong></td>
+                </tr>
+            </tbody>
+        </table>
+        <div class="finding-highlight stagger">
+            <p>More classes · Higher accuracy · Less memory</p>
+        </div>
+    </div>
+    <div class="slide-num">10 / 12</div>
+</section>
+
+<!-- ============================================================ -->
+<!-- SLIDE 11: Key Takeaways -->
+<!-- ============================================================ -->
+<section class="slide" id="slide-11">
+    <div class="slide-content reveal" style="align-items: center; gap: var(--content-gap);">
+        <h2 class="stagger">Key Takeaways</h2>
+        <ul class="takeaway-list">
+            <li class="takeaway-item stagger">
+                <span class="takeaway-check">✓</span>
+                <span class="takeaway-text"><strong class="cyan">b=16</strong> is the architecture-invariant critical threshold for quantization scale</span>
+            </li>
+            <li class="takeaway-item stagger">
+                <span class="takeaway-check">✓</span>
+                <span class="takeaway-text">Theoretical overflow bound is <strong class="cyan">5,590× conservative</strong> — empirical safety far exceeds formal guarantees</span>
+            </li>
+            <li class="takeaway-item stagger">
+                <span class="takeaway-check">✓</span>
+                <span class="takeaway-text"><strong class="cyan">h=16 is Pareto-optimal</strong>: maximum accuracy with minimal resource footprint (1.8KB, 754 instrs)</span>
+            </li>
+        </ul>
+    </div>
+    <div class="slide-num">11 / 12</div>
+</section>
+
+<!-- ============================================================ -->
+<!-- SLIDE 12: End -->
+<!-- ============================================================ -->
+<section class="slide end-slide" id="slide-12">
+    <div class="slide-content reveal">
+        <div class="end-title stagger">Thank You<span class="cursor"></span></div>
+        <a href="https://github.com/usernameisveryok/sage-ebpf-ml" target="_blank" class="gh-link stagger">
+            github.com/usernameisveryok/sage-ebpf-ml
+        </a>
+        <div class="terminal-prompt stagger" style="margin-top: var(--element-gap);">
+            <span class="prompt-char">$</span> <span class="cmd">echo</span> <span class="flag">"Questions?"</span><span class="cursor"></span>
+        </div>
+    </div>
+    <div class="slide-num">12 / 12</div>
+</section>
+
+<!-- ===== JAVASCRIPT ===== -->
+<script>
+(function() {
+    'use strict';
+
+    const slides = document.querySelectorAll('.slide');
+    const totalSlides = slides.length;
+    const progressBar = document.getElementById('progress-bar');
+    const navDotsContainer = document.getElementById('nav-dots');
+
+    // --- Create navigation dots ---
+    slides.forEach((_, i) => {
+        const dot = document.createElement('button');
+        dot.className = 'nav-dot';
+        dot.setAttribute('aria-label', `Go to slide ${i + 1}`);
+        dot.addEventListener('click', () => {
+            slides[i].scrollIntoView({ behavior: 'smooth' });
+        });
+        navDotsContainer.appendChild(dot);
+    });
+    const navDots = navDotsContainer.querySelectorAll('.nav-dot');
+
+    // --- Intersection Observer for reveals + active tracking ---
+    let currentSlide = 0;
+
+    const observer = new IntersectionObserver((entries) => {
+        entries.forEach(entry => {
+            // Reveal animation
+            const reveal = entry.target.querySelector('.reveal');
+            if (reveal) {
+                if (entry.isIntersecting) {
+                    reveal.classList.add('visible');
+                }
+            }
+
+            // Track current slide
+            if (entry.isIntersecting && entry.intersectionRatio > 0.5) {
+                const idx = Array.from(slides).indexOf(entry.target);
+                if (idx !== -1) {
+                    currentSlide = idx;
+                    updateUI();
+                }
+            }
+        });
+    }, {
+        threshold: [0.1, 0.5, 0.9]
+    });
+
+    slides.forEach(slide => observer.observe(slide));
+
+    function updateUI() {
+        // Progress bar
+        const pct = ((currentSlide) / (totalSlides - 1)) * 100;
+        progressBar.style.width = pct + '%';
+
+        // Nav dots
+        navDots.forEach((dot, i) => {
+            dot.classList.toggle('active', i === currentSlide);
+        });
+    }
+
+    // --- Keyboard navigation ---
+    document.addEventListener('keydown', (e) => {
+        let target = -1;
+        switch (e.key) {
+            case 'ArrowDown':
+            case 'ArrowRight':
+            case ' ':
+            case 'PageDown':
+                e.preventDefault();
+                target = Math.min(currentSlide + 1, totalSlides - 1);
+                break;
+            case 'ArrowUp':
+            case 'ArrowLeft':
+            case 'PageUp':
+                e.preventDefault();
+                target = Math.max(currentSlide - 1, 0);
+                break;
+            case 'Home':
+                e.preventDefault();
+                target = 0;
+                break;
+            case 'End':
+                e.preventDefault();
+                target = totalSlides - 1;
+                break;
+        }
+        if (target >= 0 && target !== currentSlide) {
+            slides[target].scrollIntoView({ behavior: 'smooth' });
+        }
+    });
+
+    // --- Initial state ---
+    updateUI();
+
+    // Also update on scroll for smooth progress
+    let ticking = false;
+    document.addEventListener('scroll', () => {
+        if (!ticking) {
+            requestAnimationFrame(() => {
+                const scrollTop = window.scrollY || document.documentElement.scrollTop;
+                const docHeight = document.documentElement.scrollHeight - window.innerHeight;
+                if (docHeight > 0) {
+                    progressBar.style.width = (scrollTop / docHeight * 100) + '%';
+                }
+                ticking = false;
+            });
+            ticking = true;
+        }
+    });
+
+    // Trigger initial reveal for first slide
+    setTimeout(() => {
+        const firstReveal = slides[0].querySelector('.reveal');
+        if (firstReveal) firstReveal.classList.add('visible');
+    }, 100);
+
+})();
+</script>
+
+</body>
+</html>
