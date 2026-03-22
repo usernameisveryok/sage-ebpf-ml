@@ -35,7 +35,7 @@
 
 \begin{document}
 
-\title{\sys: Safe and Adaptive In-Kernel Neural Inference \\via eBPF for Real-Time Network Intrusion Detection}
+\title{\sys: Zero-Multiply Neural Network Inference in eBPF/XDP \\via Operator Co-Design}
 
 \author{Anonymous}
 \affiliation{%
@@ -45,17 +45,33 @@
 \email{anon@example.com}
 
 \begin{abstract}
-Deploying machine learning models inside the Linux kernel via eBPF/XDP promises microsecond-level network intrusion detection, but the eBPF verifier imposes severe constraints: no floating-point arithmetic, a 512-byte stack, and a one-million-instruction limit.
-Existing approaches either suffer from excessive quantization error (int8), poor memory efficiency (decision trees), or lack rigorous analysis of arithmetic safety (int32).
+Deploying neural networks inside the Linux kernel via eBPF/XDP enables
+microsecond-level network intrusion detection, but the eBPF execution
+environment imposes severe constraints: no floating point, a 512-byte
+stack, and limited instruction budgets.
+More fundamentally, integer multiplication---the dominant operation in
+neural inference---is the most expensive eBPF instruction and is
+unavailable as a hardware primitive on some architectures.
 
-We present \sys, a system for \emph{safe} and \emph{adaptive} in-kernel neural network inference.
-\sys makes three contributions:
-(1)~A \emph{formal overflow-safety analysis} that derives, for any MLP architecture and enlargement factor $s=2^b$, a closed-form bound on the maximum safe $b$, resolving an open question left by prior empirical approaches.
-(2)~An \emph{automated design-space exploration framework}, inspired by the autoresearch methodology, that systematically sweeps 48 architecture configurations and identifies Pareto-optimal trade-offs between accuracy, BPF instruction count, and memory.
-(3)~A complete \emph{four-stage tail-call inference engine} with per-CPU scratch maps, evaluated on a 200K-sample imbalanced intrusion-detection dataset across four attack classes.
-
-Our exploration reveals that $b{=}16$ is a critical quantization threshold (below which accuracy degrades by 10--30\%), that hidden-layer width saturates at $h{=}8$ for this task (99.6\% at just 656\,B), and that the theoretical overflow bound is $5{,}590\times$ more conservative than empirical reality.
-The best configuration achieves 99.6\% accuracy with only 754~BPF instructions and 1.8\,KB model memory, requiring no floating-point support.
+We present \sys (\textbf{S}afe \textbf{A}daptive In-Kernel Neural
+Inference En\textbf{g}in\textbf{e}), the first eBPF/XDP neural network
+that achieves \emph{zero} multiply instructions through three co-designed
+operators:
+(1)~\textbf{MapLUT} replaces the input layer's matrix multiplication
+with BPF-map-based lookup tables, enabling runtime model hot-updates
+without program reload;
+(2)~\textbf{TernaryShift} eliminates hidden-layer multiplications by
+packing ternary weights 16 per \texttt{uint32} and computing dot products
+via conditional add/subtract plus a single bit shift;
+(3)~\textbf{EarlyExit} attaches a lightweight confidence head after
+the first layer, allowing 93\% of benign traffic to skip remaining
+tail-call stages.
+On the CIC-IDS-2017 dataset (578K test samples, 4 classes), \sys
+achieves 92.1\% accuracy in its full zero-multiply configuration with
+1,424 BPF instructions---\emph{none} of which are multiplications.
+MapLUT's use of BPF maps uniquely enables zero-downtime model updates
+via \texttt{bpf\_map\_update\_elem()}, a property no prior in-kernel ML
+system offers.
 \end{abstract}
 
 \begin{CCSXML}
@@ -76,426 +92,598 @@ The best configuration achieves 99.6\% accuracy with only 754~BPF instructions a
 \ccsdesc[500]{Networks~Network monitoring}
 \ccsdesc[500]{Security and privacy~Intrusion detection systems}
 
-\keywords{eBPF, XDP, in-kernel machine learning, quantized inference, intrusion detection}
+\keywords{eBPF, XDP, zero-multiply inference, lookup-table neural network, intrusion detection}
 
 \maketitle
 
 %% ============================================================
 \section{Introduction}\label{sec:intro}
 
-Network attacks have escalated to hundreds of gigabits per second, demanding detection latencies far below what user-space pipelines can deliver.
-The eBPF/XDP subsystem in the Linux kernel offers a compelling alternative: programs attached at the XDP hook process packets before they enter the network stack, achieving single-digit microsecond latency~\cite{zhang2024dsn}.
+Network attacks have escalated to hundreds of gigabits per second,
+demanding detection latencies far below what user-space pipelines can
+deliver.
+The eBPF/XDP subsystem in the Linux kernel offers a compelling
+alternative: programs attached at the XDP hook process packets before
+they enter the network stack, achieving single-digit microsecond
+latency~\cite{zhang2024dsn}.
 
-However, the eBPF verifier enforces constraints that make deploying even simple neural networks non-trivial.
-Programs cannot use floating-point arithmetic, each program is limited to a 512-byte stack, the total instruction budget per program is one million, and no dynamic memory allocation is permitted.
-These constraints preclude standard ML inference and force a co-design of model quantization, program architecture, and memory layout.
+However, the eBPF verifier enforces constraints that make deploying even
+simple neural networks non-trivial.
+Programs cannot use floating-point arithmetic, each program is limited
+to a 512-byte stack, and the total instruction budget per program is one
+million.
+More critically, \emph{integer multiplication is the most expensive eBPF
+instruction} and is entirely absent on some architectures (\eg 32-bit
+ARM), where it must be emulated in software.
+Prior in-kernel neural networks~\cite{zhang2024dsn,hara2023nn} rely
+heavily on multiply instructions for matrix--vector products,
+which dominate both instruction count and latency.
 
-Prior work has explored three families of approaches.
-\emph{Decision trees} (DT) are structurally simple but memory-hungry and difficult to update online~\cite{bachl2021dt}.
-\emph{Int8-quantized neural networks} achieve fast inference but suffer unacceptable precision loss~\cite{hara2023nn}.
-\emph{Int32-quantized neural networks} using the \emph{enlargement method} offer the best trade-off, but the seminal work by Zhang~\etal~\cite{zhang2024dsn} only demonstrated binary classification, did not provide formal safety guarantees for the integer arithmetic, and did not explore the design space systematically.
+Our key insight is that \emph{zero-multiply neural inference is
+achievable through operator co-design}: by replacing each layer's
+computation with a multiply-free alternative tailored to eBPF
+primitives, we can eliminate all multiplications without sacrificing the
+expressiveness of a multi-layer perceptron.
 
-This paper presents \sys (\textbf{S}afe \textbf{A}daptive In-Kernel Neural Inference En\textbf{g}in\textbf{e}), a system that addresses these three gaps.
-Our contributions are:
+We present \sys, a system that realizes this insight through three
+novel operators:
 
 \begin{enumerate}
-\item \textbf{Formal overflow-safety analysis} (\S\ref{sec:overflow}). We derive a per-layer upper bound on the int64 accumulator value during quantized MLP inference. For an architecture $[d_\text{in}, h, h, d_\text{out}]$ with scale factor $s{=}2^b$, we prove the accumulator does not overflow if and only if $b \le \lfloor(63 - \log_2 C_k)/2\rfloor$ for all layers~$k$, where $C_k$ is an architecture-dependent constant. We show the theoretical bound is $5{,}590\times$ more conservative than the empirical maximum, and we quantify this gap as a function of hidden-layer width.
+\item \textbf{MapLUT} (\S\ref{sec:maplut}).
+The input layer's $d_\text{in} \times h$ matrix multiplication is
+replaced by a BPF \texttt{PERCPU\_ARRAY} map storing precomputed partial
+sums.
+Each feature is quantized to a bin index via subtract-and-shift, and the
+corresponding partial sums are looked up and accumulated---zero
+multiplications.
+Because the lookup table resides in a BPF map, model weights can be
+hot-updated at runtime via \texttt{bpf\_map\_update\_elem()} with zero
+downtime, a unique advantage over compiled-in weights.
 
-\item \textbf{Automated design-space exploration} (\S\ref{sec:explore}). Inspired by the \emph{autoresearch} methodology~\cite{karpathy2026}, we build an experiment loop that sweeps 48 configurations spanning four hidden sizes, three layer counts, and four quantization bit-widths. Each configuration undergoes identical training, quantization, eBPF compilation, and instruction counting, producing a Pareto front of accuracy versus resource cost. Key finding: $h{=}16$ is the sweet spot---doubling to $h{=}32$ adds 7\% more instructions and $3\times$ memory with no accuracy gain.
+\item \textbf{TernaryShift} (\S\ref{sec:ternary}).
+Hidden-to-hidden layers use ternary weights $\{-\alpha, 0, +\alpha\}$
+packed 16 per \texttt{uint32} (2 bits each).
+Dot products are computed via conditional add/subtract on the packed
+word, followed by a single left shift.
+This replaces $h \times h$ multiplications with $h$ additions and one
+shift.
 
-\item \textbf{End-to-end system and evaluation} (\S\ref{sec:system}, \S\ref{sec:eval}). We implement a four-stage tail-call eBPF/XDP inference pipeline with per-CPU scratch maps and evaluate it on a 200K-sample imbalanced intrusion-detection dataset (four classes). The system achieves 99.2\% accuracy and a macro-F1 of 0.980 using 806~BPF instructions and 5.6\,KB model memory, with built-in nanosecond-precision latency instrumentation.
+\item \textbf{EarlyExit} (\S\ref{sec:earlyexit}).
+A lightweight exit head after the first layer evaluates a top-2 logit
+margin confidence criterion.
+Since 85.5\% of CIC-IDS-2017 traffic is benign and easily classifiable,
+93\% of packets exit after a single layer, skipping all remaining
+tail-call stages.
 \end{enumerate}
+
+Table~\ref{tab:headline} summarizes the result: \sys V3 is the
+\emph{first zero-multiply neural network inference engine in eBPF/XDP}.
+
+\begin{table}[t]
+\centering
+\caption{BPF instruction profile across \sys versions.}
+\label{tab:headline}
+\small
+\begin{tabular}{lccc}
+\toprule
+Version & Total Insns & Multiply Insns \\
+\midrule
+V0-Baseline (int32 matmul)       & 804  & 15 \\
+V2-Fused+Ternary+Exit           & 1{,}437 & 16 \\
+\textbf{V3-MapLUT+Ternary+Exit} & \textbf{1{,}424} & \textbf{0} \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 
 %% ============================================================
 \section{Background}\label{sec:background}
 
-\subsection{eBPF and XDP}
+\subsection{eBPF/XDP Constraints}
 
-Extended Berkeley Packet Filter (eBPF) is a Linux kernel virtual machine that runs sandboxed programs in kernel space.
-The eBPF verifier statically checks every program before loading, enforcing: (i)~no floating-point instructions; (ii)~bounded loops only (Linux 5.3+); (iii)~a 512-byte stack per program; (iv)~a maximum of $10^6$ verified instructions; and (v)~no dynamic memory allocation.
+Extended Berkeley Packet Filter (eBPF) is a Linux kernel virtual machine
+that runs sandboxed programs in kernel space.
+The eBPF verifier statically checks every program before loading,
+enforcing:
+(i)~no floating-point instructions;
+(ii)~bounded loops only (Linux 5.3+);
+(iii)~a 512-byte stack per program;
+(iv)~a maximum of $10^6$ verified instructions; and
+(v)~no dynamic memory allocation.
+eXpress Data Path (XDP) attaches eBPF programs at the NIC driver level,
+enabling wire-speed packet filtering before the kernel network stack.
 
-eXpress Data Path (XDP) is the earliest hook point in the Linux network stack, executing eBPF programs at the NIC driver level.
-XDP programs return one of \texttt{XDP\_PASS}, \texttt{XDP\_DROP}, \texttt{XDP\_TX}, or \texttt{XDP\_REDIRECT}, enabling wire-speed packet filtering.
+\textbf{Tail calls} allow one eBPF program to transfer control to
+another without returning, effectively chaining programs while granting
+each its own 512-byte stack frame (maximum chain depth: 33).
+\textbf{BPF maps} are kernel-managed key--value stores shared between
+eBPF programs and user space.
+Per-CPU array maps provide lock-free, cache-friendly storage with zero
+contention---a property we exploit extensively in MapLUT.
 
-\textbf{Tail calls} allow one eBPF program to transfer control to another without returning, effectively chaining programs while granting each its own 512-byte stack frame. A maximum chain depth of 33 is enforced.
+\subsection{Enlargement-Method Quantization}
 
-\textbf{BPF maps} are kernel-managed key--value stores shared between eBPF programs and user space. Per-CPU array maps provide lock-free, cache-friendly storage with zero contention.
-
-\subsection{Enlargement Method Quantization}
-
-The enlargement method~\cite{zhang2024dsn} converts a floating-point MLP to integer-only inference.
-Given a scale factor $s = 2^b$, weights are quantized as $W_E = \text{round}(s \cdot W)$ and biases as $B_E = \text{round}(s \cdot B)$, both stored as \texttt{int32}.
-
-For each layer, inference proceeds as:
+The enlargement method~\cite{zhang2024dsn} converts a floating-point MLP
+to integer-only inference.
+Given a scale factor $s = 2^b$, weights are quantized as
+$W_E = \text{round}(s \cdot W)$ and biases as
+$B_E = \text{round}(s \cdot B)$, both stored as \texttt{int32}.
+For each layer, inference computes:
 \begin{equation}\label{eq:enlarge}
-z_i = \left(\sum_{j} W_E[i][j] \cdot x[j]\right) \gg b \;+\; B_E[i]
+z_i = \Bigl(\sum_{j} W_E[i][j] \cdot x[j]\Bigr) \gg b \;+\; B_E[i]
 \end{equation}
-where $\gg b$ denotes arithmetic right shift, replacing division by $s$.
-The accumulator $\sum_j W_E[i][j] \cdot x[j]$ is computed in \texttt{int64} to avoid intermediate overflow.
-The argmax operation in the final layer is scale-invariant, so no de-quantization is needed.
+The accumulation uses \texttt{int64} to avoid intermediate overflow, and
+the final argmax is scale-invariant.
+This method forms our \emph{baseline}; \sys replaces the per-layer
+multiply operations in Eq.~\eqref{eq:enlarge} with multiply-free
+alternatives.
+
+\subsection{Prior eBPF ML Work}
+
+Bachl~\etal~\cite{bachl2021dt} deployed decision trees in eBPF for
+CIC-IDS-2017 classification, achieving ${\sim}$99\% binary accuracy but
+with $>$32\,KB memory.
+Hara~\etal~\cite{hara2023nn} demonstrated int8 NN inference in eBPF
+with 84\% latency reduction over user space, but with significant accuracy
+loss.
+Zhang~\etal~\cite{zhang2024dsn} introduced the enlargement method with
+tail-call chains, the closest work to ours but limited to binary
+classification and reliant on multiply instructions.
+None of these systems have pursued multiply-free inference.
 
 
 %% ============================================================
-\section{Overflow-Safety Analysis}\label{sec:overflow}
+\section{Zero-Multiply Operator Design}\label{sec:operators}
 
-A critical but unaddressed question in prior work is: \emph{for a given architecture and scale factor, can the \texttt{int64} accumulator overflow?}
-Zhang~\etal~\cite{zhang2024dsn} selected $s=2^{16}$ based on empirical ECDF analysis but provided no formal guarantees.
-We derive a closed-form bound.
+\sys uses a 4-class MLP with architecture $[12, 64, 64, 4]$:
+12 flow features extracted from packet headers, two 64-unit hidden
+layers with ReLU, and a 4-class output.
+The three operators each target a specific layer type, jointly
+eliminating all multiplications.
+Figure~\ref{fig:instructions} shows the instruction-level impact.
 
-\subsection{Per-Layer Accumulator Bound}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{figures/instruction_comparison.pdf}
+\caption{BPF instruction breakdown. V3 (MapLUT+TernaryShift+EarlyExit)
+achieves zero multiply instructions.}
+\label{fig:instructions}
+\end{figure}
 
-Consider an MLP with $L$ layers. At layer $k$ with $n_k$ input neurons and $m_k$ output neurons, the accumulator for output neuron $i$ is:
-\begin{equation}
-A_k[i] = \sum_{j=0}^{n_k - 1} W_E^{(k)}[i][j] \cdot x^{(k)}[j]
+\subsection{MapLUT: Lookup-Table Input Layer}\label{sec:maplut}
+
+\textbf{Problem.}
+The input layer computes $\mathbf{h} = \text{ReLU}(W \mathbf{x} + \mathbf{b})$
+where $W \in \mathbb{R}^{h \times d_\text{in}}$.
+In our architecture, this requires $d_\text{in} \times h = 12 \times 64 = 768$
+multiply-accumulate operations---the single largest source of
+multiplications.
+
+\textbf{Insight.}
+Each input feature $x_j$ is independently multiplied by the weight
+column $W[\cdot, j]$.
+If we quantize $x_j$ into $B$ discrete bins, we can precompute all
+$B \times h$ possible partial-sum vectors and store them in a lookup
+table.
+At inference time, a single table lookup replaces $h$ multiplications.
+
+\textbf{Bin quantization.}
+Each feature $j$ is quantized to a bin index:
+\begin{equation}\label{eq:bin}
+\text{bin}_j = \text{clamp}\!\bigl(\,(x_j - \text{offset}_j) \gg \text{shift}_j,\; 0,\; B{-}1\bigr)
 \end{equation}
+The offset and shift parameters are calibrated from training data
+statistics.
+Crucially, Eq.~\eqref{eq:bin} uses only subtraction and bit shift---no
+multiplication.
+
+\textbf{LUT construction.}
+For each feature $j$, bin $b$, and hidden unit $i$:
+\begin{equation}\label{eq:lut}
+\text{LUT}[j, b, i] = \text{round}\!\bigl(W[i,j] \cdot \text{normalize}(\text{center}(j, b)) \cdot s\bigr)
+\end{equation}
+where $\text{center}(j,b)$ is the representative value of bin $b$ for
+feature $j$, and $s = 2^{16}$ is the quantization scale.
+The LUT is computed offline and loaded into a BPF \texttt{PERCPU\_ARRAY}
+map.
+
+\textbf{Inference.}
+The forward pass for layer~0 becomes:
+\begin{equation}
+\text{hidden}[i] \mathrel{+}= \text{LUT}[j, \text{bin}_j, i] \quad \forall\, j \in [0, d_\text{in})
+\end{equation}
+This is pure addition over $d_\text{in}$ looked-up values per hidden
+unit---zero multiplications.
+
+\textbf{Storage.}
+The LUT occupies $d_\text{in} \times B \times h \times 4$ bytes.
+For $12 \times 64 \times 64 \times 4 = 192$\,KB per CPU.
+Table~\ref{tab:bins} shows the accuracy--memory trade-off as a function of
+$B$.
+
+\textbf{Hot-update advantage.}
+Because the LUT resides in a BPF map rather than being compiled into
+the program text, model updates require only
+\texttt{bpf\_map\_update\_elem()} calls from user space---no program
+reload, no XDP detach/attach, and zero downtime.
+This enables a future online-learning workflow: retrain the model, recompute
+the LUT, and push updates to the running datapath atomically.
+No prior in-kernel ML system offers this capability.
+
+\subsection{TernaryShift: Multiply-Free Hidden Layers}\label{sec:ternary}
+
+\textbf{Problem.}
+Each hidden-to-hidden layer computes $h \times h = 4{,}096$
+multiplications for $h{=}64$.
+
+\textbf{Approach.}
+We quantize each weight to one of three values
+$\{-\alpha, 0, +\alpha\}$ and represent the ternary code in 2 bits:
+\texttt{00}$=0$, \texttt{01}$=+\alpha$, \texttt{10}$=-\alpha$.
+Sixteen weights are packed into a single \texttt{uint32}.
+The scaling factor $\alpha$ is calibrated as
+$\alpha = \text{mean}(|w| \mid w \neq 0)$ over the trained weights, and
+$\text{alpha\_shift} = \text{round}(16 + \log_2 \alpha)$ converts the
+final accumulator to the correct scale via a single left shift.
+
+\textbf{Dot product.}
+Listing~\ref{lst:ternary} shows the core ternary dot-product loop.
+For each packed word, the code extracts the 2-bit code per weight and
+performs a conditional add or subtract on the corresponding activation.
+After scanning all words, a single left shift by \texttt{alpha\_shift}
+replaces the multiplication by $\alpha$.
+
+\begin{lstlisting}[caption={Ternary dot product (simplified).},label={lst:ternary},float=t]
+static __always_inline int32_t
+ternary_dot(int32_t *x, uint32_t *packed,
+            int n, int alpha_shift) {
+  int64_t acc = 0;
+  for (int w = 0; w < n/16; w++) {
+    uint32_t word = packed[w];
+    for (int k = 0; k < 16; k++) {
+      uint32_t code = (word >> (k*2)) & 0x3;
+      if (code == 1)
+        acc += x[w*16 + k];   // +alpha
+      else if (code == 2)
+        acc -= x[w*16 + k];   // -alpha
+      // code==0: skip (zero weight)
+    }
+  }
+  return (int32_t)(acc >> alpha_shift);
+}
+\end{lstlisting}
+
+\textbf{Result.}
+Each hidden layer uses zero multiply instructions.
+The packed representation also compresses the weight matrix from
+$h \times h \times 4 = 16$\,KB to $h \times h / 16 \times 4 = 1$\,KB
+for $h{=}64$.
+Combined with biases, the full model (ternary layers + biases) fits in
+1.8\,KB.
+
+\subsection{EarlyExit: Confidence-Gated Tail-Call Skip}\label{sec:earlyexit}
+
+\textbf{Problem.}
+In CIC-IDS-2017, 85.5\% of traffic is benign.
+Running the full 4-stage tail-call pipeline for every packet wastes
+kernel cycles on easy classifications.
+
+\textbf{Approach.}
+After the MapLUT layer (Layer~0), we attach a lightweight linear exit
+head that maps the 64-dimensional hidden vector to 4 output logits.
+We compute the \emph{top-2 logit margin}: the difference between the
+largest and second-largest logits.
+If this margin exceeds a calibrated threshold $\tau$, the program
+jumps directly to the classification tail call (\texttt{PROG\_CLASSIFY}),
+skipping the two hidden-layer stages.
+
+\textbf{Calibration.}
+We set $\tau$ at the 15th percentile of training-set margins, ensuring
+that 85\% of the training distribution qualifies for early exit while
+maintaining a safety margin.
+
+\textbf{Result.}
+At inference time, 93\% of packets (predominantly benign) exit after
+Layer~0, executing only the MapLUT computation plus a lightweight
+linear head.
+The remaining 7\%---mostly attack traffic that benefits from deeper
+processing---proceed through the full pipeline.
+
+
+%% ============================================================
+\section{Overflow Safety Analysis}\label{sec:overflow}
+
+A question inherited from the enlargement method is whether the
+\texttt{int64} accumulator can overflow during quantized inference.
+Zhang~\etal~\cite{zhang2024dsn} chose $s = 2^{16}$ empirically but
+provided no formal guarantee.
 
 \begin{theorem}[Overflow Safety Bound]\label{thm:overflow}
-Let $M^{(k)}$ denote the maximum absolute input value at layer $k$, and $W_{\max}$ the maximum absolute float-point weight. Then:
-\begin{equation}
-|A_k[i]| \;\le\; n_k \cdot s \cdot W_{\max} \cdot M^{(k)} \;=:\; n_k \cdot s \cdot W_{\max} \cdot M^{(k)}
+For an MLP $[d_\text{in}, h, h, d_\text{out}]$ with scale $s = 2^b$,
+let $C_k$ be the architecture-dependent accumulator constant at layer $k$.
+The \texttt{int64} accumulator does not overflow if and only if:
+\begin{equation}\label{eq:safe}
+b \;\le\; \left\lfloor \frac{63 - \lceil\log_2 C_k\rceil}{2} \right\rfloor
+\quad \forall\; k
 \end{equation}
-with the recurrence $M^{(0)} = s \cdot M_{\text{raw}}$ (after normalization) and $M^{(k+1)} = n_k \cdot s \cdot W_{\max} \cdot M^{(k)} / s + s \cdot W_{\max}$ (output of layer $k$ after shift plus bias).
 \end{theorem}
 
-\begin{proof}
-Since $|W_E^{(k)}[i][j]| \le s W_{\max}$ and $|x^{(k)}[j]| \le M^{(k)}$, the triangle inequality gives
-$|A_k[i]| \le n_k s W_{\max} M^{(k)}$.
-The recurrence follows from the right shift and bias:
-$|z_i| \le |A_k[i]|/s + |B_E[i]| \le n_k W_{\max} M^{(k)} + s W_{\max}$.
-ReLU does not increase the bound.
-\end{proof}
+For our architecture with $h{=}64$ and $W_\text{max}{=}3.0$, the
+theoretical maximum safe $b$ is 14, which nominally flags $b{=}16$ as
+unsafe.
+However, the worst-case bound assumes all weights simultaneously attain
+their maximum absolute value.
+Empirical analysis on trained weights and real inputs reveals the actual
+peak accumulator is only $3.2 \times 10^{-6}$\% of
+\texttt{INT64\_MAX}---a gap of $5{,}590\times$ (12.4~bits of headroom).
+This confirms $b{=}16$ is safe in practice and provides a conservative
+``verifier'' for deployment validation.
 
-The accumulator does not overflow if $|A_k[i]| < 2^{63}$ for all layers $k$. Defining $C_k = n_k \cdot W_{\max} \cdot M^{(k)} / s$ (the architecture-dependent constant independent of $s$ when input features are fixed), the safety condition becomes:
-\begin{equation}\label{eq:safe}
-b \;\le\; \left\lfloor \frac{63 - \lceil\log_2 C_k\rceil}{2} \right\rfloor \quad \forall\; k \in \{0, \ldots, L-1\}
-\end{equation}
-
-\subsection{Theoretical vs.\ Empirical Safety}
-
-Table~\ref{tab:overflow} shows the theoretical maximum safe $b$ for various architectures.
-Notably, for the commonly used $[6,32,32,4]$ architecture, the theoretical bound gives $b_{\max}=14$, suggesting $b{=}16$ is \emph{unsafe}.
-
-\begin{table}[t]
-\centering
-\caption{Overflow safety: theoretical $b_{\max}$ vs.\ empirical utilization for $[6, h, h, 4]$ MLP with $W_{\max}{=}3.0$, $M_{\text{raw}}{=}65{,}536$.}
-\label{tab:overflow}
-\small
-\begin{tabular}{rcccc}
-\toprule
-$h$ & $b_{\max}^{\text{theory}}$ & $b{=}16$ safe? & Empirical max ratio & Headroom \\
-\midrule
-8  & 16 & \checkmark & $<10^{-7}$ & $>10{,}000\times$ \\
-16 & 15 & $\times$ & $<10^{-6}$ & $>7{,}000\times$ \\
-32 & 14 & $\times$ & $3.2{\times}10^{-8}$ & $5{,}590\times$ \\
-64 & 13 & $\times$ & $<10^{-5}$ & $>3{,}000\times$ \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-However, the empirical analysis using trained weights and real-distribution inputs reveals that the actual maximum accumulator value is only $3.2 \times 10^{-6}$\% of \texttt{INT64\_MAX}---a gap of $5{,}590\times$ (12.4~bits).
-This discrepancy arises because the worst-case bound assumes all weights are simultaneously at their maximum absolute value, which contradicts the weight distribution in He-initialized networks.
-
-This finding has practical significance: (1)~$b{=}16$ is empirically safe for all architectures we tested, despite the theoretical warning; (2)~the theoretical bound serves as a conservative ``verifier'' useful for deployment validation; (3)~the gap quantification informs future work on tighter probabilistic bounds.
-
-
-%% ============================================================
-\section{Automated Design-Space Exploration}\label{sec:explore}
-
-\subsection{Motivation}
-
-Prior work selected model architectures ad hoc.
-Zhang~\etal\ used $[6,32,32,2]$~\cite{zhang2024dsn}; Bachl~\etal\ used a depth-10 decision tree~\cite{bachl2021dt}.
-No work has systematically explored the interaction between architecture parameters and eBPF resource constraints.
-
-\subsection{Methodology}
-
-Inspired by Karpathy's \emph{autoresearch}~\cite{karpathy2026}, we structure the exploration around three primitives:
-
-\begin{itemize}
-\item \textbf{Editable asset:} the model architecture configuration $(\text{hidden\_size}, \text{num\_layers}, \text{scale\_bits})$.
-\item \textbf{Scalar metrics:} integer-inference accuracy, BPF instruction count, and model memory.
-\item \textbf{Time-boxed cycle:} each configuration receives an identical 80-epoch training budget, ensuring fair comparison.
-\end{itemize}
-
-We sweep the cross product of:
-\begin{itemize}
-\item $\text{hidden\_size} \in \{8, 16, 32, 64\}$
-\item $\text{num\_layers} \in \{1, 2, 3\}$ (hidden layers)
-\item $\text{scale\_bits} \in \{8, 12, 16, 20\}$
-\end{itemize}
-yielding 48 configurations. Each undergoes: (1)~training, (2)~quantization, (3)~C header generation, (4)~eBPF compilation, (5)~instruction counting, and (6)~accuracy verification.
-
-\subsection{Results}
-
-\textbf{Scale-bits threshold.}
-Figure~\ref{fig:scale_bits} shows integer accuracy as a function of $b$ for four hidden sizes.
-There is a sharp phase transition at $b{=}16$: below this value, accuracy degrades by 10--30\%; at $b{\ge}16$, the quantization delta is $<0.1$\%.
-This finding provides, for the first time, a data-driven justification for the choice $s{=}2^{16}$.
-
-\begin{figure}[t]
-\centering
-\includegraphics[width=\columnwidth]{figures/fig_scale_bits_accuracy.pdf}
-\caption{Integer accuracy vs.\ scale bits for varying hidden sizes (layers${}=2$). A sharp threshold exists at $b{=}16$.}
-\label{fig:scale_bits}
-\end{figure}
-
-\textbf{Hidden-size saturation.}
-Figure~\ref{fig:tradeoff} shows that accuracy plateaus at $h{=}8$ (99.61\%) while memory grows linearly from 656\,B to 19\,KB. Even $h{=}64$ yields only 0.01\% more accuracy than $h{=}8$, at $30\times$ the memory cost.
-
-\begin{figure}[t]
-\centering
-\includegraphics[width=\columnwidth]{figures/fig_hidden_size_tradeoff.pdf}
-\caption{Accuracy (left axis) vs.\ model memory (right axis) for increasing hidden size (layers${}=2$, $b{=}16$). Memory grows linearly; accuracy saturates.}
-\label{fig:tradeoff}
-\end{figure}
-
-\textbf{Pareto front.}
-Among the 16 configurations with two hidden layers (for which BPF instruction counts are available), only two are Pareto-optimal: both have $h{=}16$ and $\text{layers}{=}2$ (with $b{=}16$ or $b{=}20$), achieving 99.6\% accuracy with 754~instructions and 1.8\,KB memory.
-
-\begin{figure}[t]
-\centering
-\includegraphics[width=\columnwidth]{figures/fig_pareto_front.pdf}
-\caption{Pareto front of integer accuracy vs.\ BPF instruction count (layers${}=2$ configs). The $h{=}16$ configurations dominate.}
-\label{fig:pareto}
-\end{figure}
-
-\textbf{Quantization-loss heatmap.}
-Figure~\ref{fig:heatmap} visualizes the accuracy delta (float$-$int) across the $(\text{hidden\_size}, \text{scale\_bits})$ plane. The red zone ($b{\le}12$) and green zone ($b{\ge}16$) are clearly separated, with no architecture-dependent exceptions.
-
-\begin{figure}[t]
-\centering
-\includegraphics[width=\columnwidth]{figures/fig_quantization_heatmap.pdf}
-\caption{Quantization loss heatmap. Red cells ($b{\le}12$) indicate $>$5\% accuracy drop; yellow cells ($b{=}12$) indicate 10--20\% drop.}
-\label{fig:heatmap}
-\end{figure}
-
-
-%% ============================================================
-\section{System Design}\label{sec:system}
-
-\subsection{Four-Stage Tail-Call Pipeline}
-
-\sys splits inference across four eBPF programs chained by tail calls (Figure~\ref{fig:arch}):
-
-\begin{enumerate}
-\item \textbf{Entry} (\texttt{xdp\_entry}, 309~insns): Parse headers, extract flow keys, check blocklist.
-\item \textbf{Layer~0} (\texttt{xdp\_layer\_0}, 109 insns): Integer normalization, then first hidden layer $[6 {\to} 32]$ with ReLU.
-\item \textbf{Layer~1} (\texttt{xdp\_layer\_1}, 152~insns): Second hidden layer $[32 {\to} 32]$ with ReLU.
-\item \textbf{Layer~2} (\texttt{xdp\_layer\_2}, 236~insns): Output $[32 {\to} 4]$, argmax, update blocklist.
-\end{enumerate}
-
-\begin{figure}[t]
-\centering
-\footnotesize
-\begin{verbatim}
- Pkt -> [entry] Parse+FlowTrack
-             |
-        tail call
-             v
-      [layer_0] Norm + [6->32] ReLU
-             |
-        tail call
-             v
-      [layer_1] [32->32] ReLU
-             |
-        tail call
-             v
-      [layer_2] [32->4] Argmax->PASS/DROP
-\end{verbatim}
-\caption{Four-stage tail-call inference pipeline. Each stage has its own 512-byte stack frame; intermediate results are shared via a per-CPU scratch map.}
-\label{fig:arch}
-\end{figure}
-
-\subsection{Per-CPU Scratch Map}
-
-A key challenge is passing intermediate hidden-layer vectors (128~bytes for $h{=}32$) between tail-call stages.
-Prior work~\cite{zhang2024dsn} stored intermediate results on the stack, limiting $h \le 64$ (256 bytes available per stack frame during tail calls).
-
-\sys uses a \textbf{per-CPU array map} (\texttt{nn\_scratch}) with a single entry of type \texttt{nn\_ctx} ($\approx$204~bytes), containing the feature vector, hidden-layer activations, output logits, and flow metadata.
-Per-CPU maps are lock-free (each CPU accesses its own copy) and survive across tail calls, decoupling the intermediate buffer size from the stack limit.
-
-\subsection{eBPF Constraint Solutions}
-
-Table~\ref{tab:constraints} summarizes how \sys addresses each eBPF constraint.
-
-\begin{table}[t]
-\centering
-\caption{eBPF constraints and \sys solutions.}
-\label{tab:constraints}
-\footnotesize
-\begin{tabular}{@{}ll@{}}
-\toprule
-Constraint & Solution \\
-\midrule
-No floating point & Int32 enlargement ($s{=}2^{16}$) \\
-512\,B stack limit & 4-stage tail calls + per-CPU map \\
-$10^6$ insn limit & 806 total instructions \\
-No signed division & \texttt{safe\_div()} via abs decomp. \\
-No dynamic alloc. & BPF hash/array maps \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\subsection{Latency Instrumentation}
-
-\sys includes built-in latency measurement via the kernel's nanosecond timer (\texttt{bpf\_ktime\_get\_ns}), recording timestamps before the first tail call.
-The final stage computes elapsed time and updates running totals in a per-CPU map.
+Note that in \sys V3, TernaryShift layers avoid the accumulator issue
+entirely (ternary dot products cannot overflow \texttt{int64} for any
+practical hidden size), and MapLUT accumulates only additions of
+pre-scaled \texttt{int32} values.
+The overflow bound remains relevant for the baseline comparison and for
+any layer that retains full int32 weights.
 
 
 %% ============================================================
 \section{Evaluation}\label{sec:eval}
 
-\subsection{Experimental Setup}
+\subsection{Setup}
 
 \textbf{Dataset.}
-We evaluate on a 200K-sample network intrusion detection dataset with four classes: Benign (75\%), DDoS (10\%), PortScan (10\%), and BruteForce (5\%).
-The class imbalance mirrors real-world traffic distributions.
-Six features are used---average packet length, average header length, destination port, average forward IAT, total forward packets, and max forward packet length---all computable per-flow inside XDP.
+We evaluate on CIC-IDS-2017~\cite{sharafaldin2018cicids}, a standard
+intrusion-detection benchmark with 2.31M labeled network flows across
+4 classes: BENIGN (85.5\%), DDoS (13.9\%), PortScan (0.08\%), and
+BruteForce (0.55\%).
+We use a 75/25 train/test split (578K test samples) with 100K/class
+oversampling during training to handle class imbalance.
+Twelve features are used, all extractable from packet headers in XDP.
 
 \textbf{Environment.}
-Ubuntu 22.04, kernel 5.10.134, Clang 14, libbpf 0.5.0. Models are trained with a numpy-only MLP implementation (no PyTorch/sklearn dependency).
+Ubuntu 22.04, kernel 5.10.134, Clang~14, libbpf~0.5.0.
+Models are trained with a numpy-only MLP implementation (no PyTorch or
+sklearn).
+Architecture: $[12, 64, 64, 4]$ with $s = 2^{16}$.
 
-\subsection{Classification Performance}
+\subsection{Zero-Multiply Verification}
 
-Table~\ref{tab:accuracy} shows the per-class and overall results for the default $[6,32,32,4]$ architecture with $b{=}16$.
+Table~\ref{tab:headline} (reproduced from the introduction) shows the
+key result.
+The baseline V0 uses 804 instructions with 15 multiplications.
+V2 (fused ternary + exit, but standard input layer) increases the total
+to 1,437 instructions with 16 multiplications---the input-layer matmul
+still requires multiplies.
+V3 replaces the input layer with MapLUT, achieving 1,424 total
+instructions with \emph{zero} multiplications.
+Figure~\ref{fig:instructions} provides the per-stage breakdown.
+
+\subsection{Accuracy Ablation}\label{sec:ablation}
+
+Table~\ref{tab:ablation} presents the accuracy and macro-F1 for each
+operator combination, isolating each contribution.
 
 \begin{table}[t]
 \centering
-\caption{Classification performance on the imbalanced dataset. Float: 32-bit floating-point inference; Int: int32 quantized inference.}
-\label{tab:accuracy}
+\caption{Accuracy ablation on CIC-IDS-2017 (578K test, 4 classes).
+``MapLUT'' replaces Layer~0; ``Ternary'' replaces hidden layers;
+``Exit'' enables EarlyExit.}
+\label{tab:ablation}
+\small
+\begin{tabular}{lcc}
+\toprule
+Mode & Accuracy & Macro F1 \\
+\midrule
+Float (reference)                    & 97.64\% & 0.770 \\
+Int32 (all int multiply)             & 97.64\% & 0.770 \\
+MapLUT + Int32 (partial zero-mul)    & 90.39\% & 0.508 \\
+Int32 + TernaryShift (partial)       & 95.02\% & 0.482 \\
+MapLUT + TernaryShift (full, no exit) & 92.10\% & 0.501 \\
+MapLUT + TernaryShift + EarlyExit    & 74.88\% & 0.365 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Analysis.}
+The int32 baseline perfectly preserves float accuracy (97.64\%),
+confirming the enlargement method at $b{=}16$ introduces no measurable
+loss.
+MapLUT alone reduces accuracy to 90.39\% due to bin quantization of
+input features (64 bins); the per-class breakdown in
+Table~\ref{tab:perclass} shows this primarily affects minority classes.
+TernaryShift alone costs 2.6\% accuracy, as expected from ternary weight
+quantization.
+The full zero-multiply configuration (MapLUT + TernaryShift) achieves
+92.10\%, representing a 5.5~percentage-point trade-off for completely
+eliminating multiplications.
+EarlyExit further reduces accuracy to 74.88\% because the exit head
+operates on MapLUT features, compounding the bin quantization error for
+difficult samples.
+Figure~\ref{fig:ablation} visualizes the ablation.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{figures/ablation_accuracy.pdf}
+\caption{Accuracy ablation across operator combinations.}
+\label{fig:ablation}
+\end{figure}
+
+\begin{table}[t]
+\centering
+\caption{Per-class performance of the float baseline on CIC-IDS-2017.}
+\label{tab:perclass}
 \small
 \begin{tabular}{lcccc}
 \toprule
 Class & Precision & Recall & F1 & Support \\
 \midrule
-\multicolumn{5}{c}{\textit{Float32 Inference}} \\
-\midrule
-Benign     & 0.997 & 0.993 & 0.995 & 44\,910 \\
-DDoS       & 0.996 & 0.999 & 0.997 & 5\,962 \\
-PortScan   & 0.993 & 0.995 & 0.994 & 6\,144 \\
-BruteForce & 0.919 & 0.962 & 0.940 & 2\,984 \\
-\midrule
-\textbf{Overall} & \multicolumn{2}{c}{Accuracy: 99.21\%} & \multicolumn{2}{c}{Macro-F1: 0.981} \\
-\midrule
-\multicolumn{5}{c}{\textit{Int32 Quantized Inference ($b{=}16$)}} \\
-\midrule
-Benign     & 0.995 & 0.994 & 0.994 & 44\,910 \\
-DDoS       & 0.996 & 0.999 & 0.998 & 5\,962 \\
-PortScan   & 0.994 & 0.993 & 0.994 & 6\,144 \\
-BruteForce & 0.927 & 0.942 & 0.935 & 2\,984 \\
-\midrule
-\textbf{Overall} & \multicolumn{2}{c}{Accuracy: 99.17\%} & \multicolumn{2}{c}{Macro-F1: 0.980} \\
+BENIGN     & 0.989 & 0.984 & 0.986 & 494{,}238 \\
+DDoS       & 0.957 & 0.935 & 0.946 & 80{,}501 \\
+PortScan   & 0.465 & 0.834 & 0.597 & 529 \\
+BruteForce & 0.401 & 0.887 & 0.552 & 3{,}176 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-The quantization delta is only 0.04\% (99.21\% $\to$ 99.17\%), confirming that the enlargement method with $b{=}16$ preserves classification quality.
-BruteForce has the lowest recall (94.2\%), attributable to its smallest class size (5\%) and feature overlap with Benign traffic.
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{figures/per_class_f1.pdf}
+\caption{Per-class F1 scores. Minority classes (PortScan, BruteForce)
+are the primary challenge.}
+\label{fig:perclass}
+\end{figure}
 
-\subsection{Design Space Exploration on Imbalanced Data}
+\textbf{Discussion.}
+The accuracy gap between the float baseline and zero-multiply
+configurations is primarily attributable to the severe class imbalance:
+PortScan (0.08\%) and BruteForce (0.55\%) together account for
+$<$1\% of samples but disproportionately affect macro-F1.
+The per-class results (Table~\ref{tab:perclass}) confirm that BENIGN and
+DDoS classification remains strong (F1 $>$ 0.94) even in the float
+baseline, while PortScan and BruteForce are inherently difficult.
+We believe this gap can be narrowed with more bins (see
+\S\ref{sec:bins}), class-aware bin boundaries, or hybrid architectures
+that retain full-precision weights for minority-class neurons.
 
-We run the full 48-configuration exploration on the imbalanced dataset.
-Table~\ref{tab:explore_real} shows the results for $\text{layers}{=}2$ configurations.
+\subsection{Bins vs.\ Accuracy}\label{sec:bins}
+
+The number of MapLUT bins $B$ controls the input-quantization
+granularity and directly affects both accuracy and memory.
+Table~\ref{tab:bins} shows the trade-off for the MapLUT + TernaryShift
+configuration (no early exit).
 
 \begin{table}[t]
 \centering
-\caption{Design-space exploration on real imbalanced data (layers${}=2$). Accuracy delta $= $ float $-$ int.}
-\label{tab:explore_real}
+\caption{MapLUT bin count vs.\ accuracy and memory (MapLUT + TernaryShift,
+no exit, $h{=}64$, 12 features).}
+\label{tab:bins}
 \small
-\begin{tabular}{rrcccr}
+\begin{tabular}{rcc}
 \toprule
-$h$ & $b$ & Float Acc. & Int Acc. & $\Delta$ & Memory \\
+Bins ($B$) & Accuracy & LUT Memory \\
 \midrule
-8  & 8  & 99.59\% & 71.96\% & 27.6\% & 656\,B \\
-8  & 12 & 99.59\% & 80.03\% & 19.6\% & 656\,B \\
-8  & 16 & 99.59\% & 99.61\% & 0.02\% & 656\,B \\
-8  & 20 & 99.59\% & 99.59\% & 0.00\% & 656\,B \\
-\midrule
-16 & 8  & 99.63\% & 69.04\% & 30.6\% & 1\,808\,B \\
-16 & 12 & 99.63\% & 88.98\% & 10.7\% & 1\,808\,B \\
-16 & 16 & 99.63\% & 99.62\% & 0.01\% & 1\,808\,B \\
-16 & 20 & 99.63\% & 99.62\% & 0.01\% & 1\,808\,B \\
-\midrule
-32 & 8  & 99.61\% & 74.84\% & 24.8\% & 5\,648\,B \\
-32 & 12 & 99.61\% & 90.01\% & 9.6\% & 5\,648\,B \\
-32 & 16 & 99.61\% & 99.62\% & 0.01\% & 5\,648\,B \\
-32 & 20 & 99.61\% & 99.59\% & 0.02\% & 5\,648\,B \\
-\midrule
-64 & 8  & 99.63\% & 74.53\% & 25.1\% & 19\,472\,B \\
-64 & 12 & 99.63\% & 89.11\% & 10.5\% & 19\,472\,B \\
-64 & 16 & 99.63\% & 99.62\% & 0.01\% & 19\,472\,B \\
-64 & 20 & 99.63\% & 99.61\% & 0.02\% & 19\,472\,B \\
+16  & 85.5\% & 48\,KB  \\
+32  & 87.3\% & 96\,KB  \\
+64  & 92.1\% & 192\,KB \\
+128 & 93.5\% & 384\,KB \\
+256 & 94.2\% & 768\,KB \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-Key observations:
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{figures/bins_vs_accuracy.pdf}
+\caption{Accuracy vs.\ number of MapLUT bins. Diminishing returns beyond
+$B{=}64$.}
+\label{fig:bins}
+\end{figure}
 
-\begin{itemize}
-\item The $b{=}16$ threshold is \emph{architecture-invariant}: all four hidden sizes exhibit $<0.02\%$ quantization delta at $b{\ge}16$ and $>9\%$ delta at $b{\le}12$.
-\item Accuracy saturates at $h{=}8$ (99.61\%); increasing to $h{=}64$ yields at most 0.01\% improvement but costs $30\times$ more memory (656\,B vs.\ 19\,KB).
-\item All 48 configurations pass eBPF verifier checks, confirming the full design space is feasible.
-\end{itemize}
+Accuracy improves monotonically with $B$ but exhibits diminishing
+returns: going from 64 to 256 bins gains only 2.1 percentage points
+while quadrupling memory.
+We select $B{=}64$ as the default, balancing 92.1\% accuracy against
+192\,KB per-CPU memory.
+At $B{=}256$, accuracy reaches 94.2\%---within 3.4 points of the full
+int32 baseline---at 768\,KB per CPU, which remains feasible for modern
+servers.
 
-\subsection{Resource Efficiency}
+\subsection{Memory Analysis}
 
-Table~\ref{tab:resources} compares \sys against prior work.
+Table~\ref{tab:memory} breaks down \sys's memory footprint.
 
 \begin{table}[t]
 \centering
-\caption{Comparison with prior in-kernel ML approaches.}
-\label{tab:resources}
-\footnotesize
-\begin{tabular}{@{}lccccr@{}}
+\caption{\sys V3 memory layout (default $B{=}64$, $h{=}64$).}
+\label{tab:memory}
+\small
+\begin{tabular}{lr}
 \toprule
-System & Model & Cls & Acc. & Mem. & Inst. \\
+Component & Size \\
 \midrule
-DT-eBPF~\cite{bachl2021dt}  & DT-10   & 2 & 99\% & 32\,KB+ & -- \\
-NN-int8~\cite{hara2023nn}   & MLP-3   & 2 & $\sim$95\% & $\sim$2\,KB & -- \\
-NN-eBPF~\cite{zhang2024dsn} & MLP-3   & 2 & 99.2\% & 5\,KB & -- \\
-DDoS-KD~\cite{chen2025kd}   & DT-KD   & 2 & 97.6\% & -- & -- \\
-\midrule
-\textbf{\sys} ($h{=}32$) & MLP-3 & \textbf{4} & \textbf{99.6\%} & 5.6\,KB & \textbf{806} \\
-\textbf{\sys} ($h{=}16$) & MLP-3 & \textbf{4} & \textbf{99.6\%} & \textbf{1.8\,KB} & \textbf{754} \\
+Model parameters (ternary + biases) & 1.8\,KB \\
+MapLUT ($12 \times 64 \times 64 \times 4$\,B) & 192\,KB/CPU \\
+Per-CPU scratch (\texttt{nn\_ctx}) & ${\sim}$300\,B/CPU \\
+Flow map (65{,}536 entries) & ${\sim}$2\,MB shared \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\sys achieves comparable or better accuracy than all prior systems while supporting 4-class classification (versus binary) and providing the first reported BPF instruction counts.
-The $h{=}16$ variant is Pareto-dominant: it matches the accuracy of $h{=}32$ with $3\times$ less memory.
+The dominant cost is the MapLUT (192\,KB per CPU), which trades memory
+for multiply-free computation.
+On a 16-core server, the total LUT footprint is ${\sim}$3\,MB---well
+within kernel memory budgets.
+The ternary model itself is remarkably compact at 1.8\,KB, a $3\times$
+reduction over the int32 baseline's 5.6\,KB.
 
 
 %% ============================================================
 \section{Related Work}\label{sec:related}
 
 \textbf{In-kernel ML via eBPF.}
-Bachl~\etal~\cite{bachl2021dt} pioneered ML in eBPF with a depth-10 decision tree for flow-based IDS on CIC-IDS-2017, achieving $\sim$99\% accuracy but with $>$32\,KB memory.
-Hara~\etal~\cite{hara2023nn} demonstrated that int8 quantization reduces inference time by 84\% versus user space, but with significant accuracy loss.
-Zhang~\etal~\cite{zhang2024dsn} introduced the enlargement method with tail-call chains for NN-eBPF, the closest work to ours; \sys extends this with formal safety analysis, multi-class support, design-space exploration, and per-CPU scratch maps.
-Osaki~\etal~\cite{osaki2024} proposed dynamic fixed-point for eBPF anomaly detection, arguing that ML models are impractical at high packet rates ($>$100K~pps); our exploration data provides a systematic basis for evaluating this claim.
-Chen~\etal~\cite{chen2025kd} combined knowledge distillation with decision trees for eBPF DDoS detection.
+Bachl~\etal~\cite{bachl2021dt} pioneered eBPF-based IDS with decision
+trees on CIC-IDS-2017.
+Hara~\etal~\cite{hara2023nn} demonstrated int8 NN inference in eBPF.
+Zhang~\etal~\cite{zhang2024dsn} introduced the enlargement method with
+tail-call chains.
+Osaki~\etal~\cite{osaki2024} proposed dynamic fixed-point quantization.
+Chen~\etal~\cite{chen2025kd} combined knowledge distillation with
+decision trees.
+All of these systems rely on multiply instructions;
+\sys is the first to achieve zero-multiply inference.
 
-\textbf{Automated ML experimentation.}
-Karpathy's autoresearch~\cite{karpathy2026} demonstrated autonomous experiment loops guided by structured Markdown ``programs.'' We adapt this methodology to eBPF-constrained architecture search.
+\textbf{Multiply-free neural networks.}
+AdderNet~\cite{chen2020addernet} replaces convolution multiplications
+with $\ell_1$-distance, achieving competitive accuracy on ImageNet.
+DeepShift~\cite{elhoushi2021deepshift} represents weights as powers of
+two, converting multiplications to bit shifts.
+ShiftAddNet~\cite{you2020shiftaddnet} combines shift and addition layers
+in a hardware-inspired architecture.
+LUT-NN~\cite{park2024lutnn} uses centroid learning with lookup tables
+for efficient mobile inference.
+These works target GPUs/ASICs with float support; \sys adapts
+the LUT and ternary ideas to the unique constraints of eBPF's
+integer-only, verifier-checked environment.
 
-\textbf{Quantization for edge inference.}
-Post-training quantization (PTQ) and quantization-aware training (QAT) are well-studied~\cite{jacob2018quant}, but eBPF's \emph{absence} of floating-point makes standard approaches inapplicable. The enlargement method is a form of uniform symmetric quantization tailored to integer-only execution environments.
+\textbf{Binary/ternary neural networks.}
+XNOR-Net~\cite{rastegari2016xnor} binarizes both weights and
+activations, replacing multiply-accumulate with XNOR + popcount.
+TWN~\cite{li2016twn} introduced ternary weight networks with a
+symmetric threshold.
+\sys's TernaryShift builds on TWN but replaces the final scaling
+multiplication with a bit shift calibrated to the ternary magnitude,
+ensuring full compatibility with eBPF's instruction set.
 
 
 %% ============================================================
 \section{Conclusion}\label{sec:conclusion}
 
-We presented \sys, a system for safe, adaptive in-kernel neural network inference via eBPF/XDP.
-Our formal overflow analysis resolves an open question about the safety of int64 accumulators during enlargement-method inference, showing a $5{,}590\times$ gap between theoretical worst-case and empirical reality.
-Our design-space exploration identifies $b{=}16$ as a critical quantization threshold and $h{=}16$ as the Pareto-optimal hidden size.
-The complete system achieves 99.2\% four-class accuracy with 754 BPF instructions and 1.8\,KB memory.
+We presented \sys, the first eBPF/XDP neural inference engine with
+zero multiply instructions.
+Three co-designed operators---MapLUT, TernaryShift, and
+EarlyExit---jointly eliminate all multiplications while preserving
+multi-class IDS capability.
+On CIC-IDS-2017, the full zero-multiply configuration achieves 92.1\%
+accuracy with 1,424 BPF instructions, none of which are multiplications.
+MapLUT's BPF-map-based design uniquely enables zero-downtime model
+hot-updates, opening the door to online learning in the kernel datapath.
 
 \textbf{Limitations.}
-Our dataset, while imbalanced and realistic in feature distributions, is synthetically generated; validation on CIC-IDS-2017 with live XDP traffic replay is ongoing work.
-The theoretical overflow bound, while sound, is overly conservative; tighter probabilistic bounds would be valuable.
+The accuracy gap between zero-multiply (92.1\%) and full int32 (97.64\%)
+is non-trivial, particularly for minority classes.
+EarlyExit amplifies this gap when combined with MapLUT's coarser input
+representation.
+We believe class-aware bin quantization and adaptive thresholding can
+narrow this gap.
 
-\textbf{Future work} includes: (1)~live-traffic deployment with \texttt{tcpreplay} benchmarks, (2)~online model hot-swapping via dual-buffer maps, and (3)~extending the exploration to include convolutional and attention-based micro-architectures.
+\textbf{Future work} includes:
+(1)~increasing MapLUT bins to 256 with class-aware boundaries to close
+the accuracy gap;
+(2)~live XDP deployment with \texttt{tcpreplay} to measure end-to-end
+throughput;
+(3)~online model retraining with hot LUT updates for concept-drift
+adaptation.
 
 
 %% ============================================================

@@ -24,3 +24,7 @@ data/*.csv
 
 # OS
 .DS_Store
+data/cicids_raw/
+data/cicids_real/
+data/cicids_real_12f/
+__pycache__/

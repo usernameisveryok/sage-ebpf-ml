@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>SAGE — Safe Adaptive In-Kernel Neural Inference via eBPF</title>
+<title>SAGE — Zero-Multiply Neural Inference in eBPF/XDP</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
@@ -741,11 +741,11 @@ p, li { font-size: var(--body-size); color: var(--text); }
 <!-- ============================================================ -->
 <section class="slide title-slide" id="slide-1">
     <div class="slide-content reveal">
-        <div class="title-tagline stagger" style="margin-bottom: var(--element-gap);">Real-Time Network Intrusion Detection</div>
+        <div class="title-tagline stagger" style="margin-bottom: var(--element-gap);">Operator Co-Design for Real-Time Intrusion Detection</div>
         <h1 class="title-mega stagger">SAGE<span class="cursor"></span></h1>
-        <p class="title-sub stagger">Safe Adaptive In-Kernel Neural Inference via eBPF</p>
+        <p class="title-sub stagger">Zero-Multiply Neural Inference in eBPF/XDP</p>
         <div class="terminal-prompt stagger">
-            <span class="prompt-char">$</span> <span class="cmd">sudo</span> <span class="flag">./sage --attach eth0</span><span class="cursor"></span>
+            <span class="prompt-char">$</span> <span class="cmd">cat</span> <span class="flag">authors.txt</span> → <span class="dim">Anonymous • 2025</span><span class="cursor"></span>
         </div>
     </div>
     <div class="slide-num">01 / 12</div>
@@ -758,87 +758,77 @@ p, li { font-size: var(--body-size); color: var(--text); }
     <div class="slide-content reveal">
         <h2 class="stagger">The Problem</h2>
         <ul class="bullet-list" style="list-style: none; max-width: min(90vw, 750px); margin: 0 auto var(--content-gap);">
-            <li class="stagger" style="padding: clamp(4px, 0.5vh, 8px) 0;"><span class="green">▸</span> Modern DDoS attacks exceed <span class="cyan">hundreds of Gbps</span></li>
-            <li class="stagger" style="padding: clamp(4px, 0.5vh, 8px) 0;"><span class="green">▸</span> User-space ML pipelines: <span class="red">too slow</span> — milliseconds per packet</li>
-            <li class="stagger" style="padding: clamp(4px, 0.5vh, 8px) 0;"><span class="green">▸</span> Need: <span class="green">microsecond-level</span> packet classification at line rate</li>
+            <li class="stagger" style="padding: clamp(4px, 0.5vh, 8px) 0;"><span class="green">▸</span> eBPF/XDP enables <span class="cyan">µs-latency</span> packet processing in the Linux kernel</li>
+            <li class="stagger" style="padding: clamp(4px, 0.5vh, 8px) 0;"><span class="green">▸</span> But: <span class="red">no float</span>, <span class="red">512B stack</span>, <span class="red">1M instruction limit</span></li>
+            <li class="stagger" style="padding: clamp(4px, 0.5vh, 8px) 0;"><span class="green">▸</span> Multiply instructions are <span class="red">expensive</span> and dominate inference cost</li>
         </ul>
-        <div class="latency-compare stagger">
-            <div class="latency-box kernel-box">
-                <div class="latency-zone green">Kernel Space</div>
-                <div class="latency-number green">~1<span class="latency-unit"> μs</span></div>
-                <div class="small" style="margin-top: 4px;">XDP / eBPF hook</div>
-            </div>
-            <div class="vs-badge">vs</div>
-            <div class="latency-box user-box">
-                <div class="latency-zone red">User Space</div>
-                <div class="latency-number red">~5<span class="latency-unit"> ms</span></div>
-                <div class="small" style="margin-top: 4px;">Context switch + ML</div>
-            </div>
+        <div class="finding-highlight stagger">
+            <p>Can we eliminate <strong>ALL</strong> multiplications from neural network inference?</p>
         </div>
     </div>
     <div class="slide-num">02 / 12</div>
 </section>
 
 <!-- ============================================================ -->
-<!-- SLIDE 3: eBPF Constraints -->
+<!-- SLIDE 3: Three Operator Innovations -->
 <!-- ============================================================ -->
 <section class="slide" id="slide-3">
     <div class="slide-content reveal" style="align-items: center;">
-        <h2 class="stagger">eBPF: Power with Constraints</h2>
-        <div class="constraint-grid" style="max-width: min(90vw, 800px);">
-            <div class="constraint-box stagger">
-                <span class="constraint-icon">❌</span>
-                <span class="constraint-label">No floating point</span>
-            </div>
-            <div class="constraint-box stagger">
-                <span class="constraint-icon">❌</span>
-                <span class="constraint-label">512B stack limit</span>
-            </div>
-            <div class="constraint-box stagger">
-                <span class="constraint-icon">❌</span>
-                <span class="constraint-label">1M instruction limit</span>
-            </div>
-            <div class="constraint-box stagger">
-                <span class="constraint-icon">❌</span>
-                <span class="constraint-label">No dynamic allocation</span>
-            </div>
-            <div class="constraint-box stagger">
-                <span class="constraint-icon">❌</span>
-                <span class="constraint-label">No signed division</span>
-            </div>
-        </div>
-        <p class="slide-tagline stagger">"How do you fit a neural network in here?"</p>
-    </div>
-    <div class="slide-num">03 / 12</div>
-</section>
-
-<!-- ============================================================ -->
-<!-- SLIDE 4: Three Contributions -->
-<!-- ============================================================ -->
-<section class="slide" id="slide-4">
-    <div class="slide-content reveal" style="align-items: center;">
-        <h2 class="stagger">Three Contributions</h2>
+        <h2 class="stagger">Three Operator Innovations</h2>
         <div class="contrib-cards">
             <div class="contrib-card stagger">
                 <div class="contrib-num">01</div>
                 <div class="contrib-body">
-                    <h3>Formal Overflow Safety</h3>
-                    <p>Closed-form theorem for int64 accumulator safety bounds</p>
+                    <h3>MapLUT</h3>
+                    <p>BPF map-based lookup table replaces Layer 0 multiplications</p>
                 </div>
             </div>
             <div class="contrib-card stagger">
                 <div class="contrib-num">02</div>
                 <div class="contrib-body">
-                    <h3>Design Space Exploration</h3>
-                    <p>48 configurations, Pareto-front analysis for accuracy vs resources</p>
+                    <h3>TernaryShift</h3>
+                    <p>2-bit packed ternary weights + bitshift replace hidden layer multiplications</p>
                 </div>
             </div>
             <div class="contrib-card stagger">
                 <div class="contrib-num">03</div>
                 <div class="contrib-body">
-                    <h3>End-to-End System</h3>
-                    <p>4-class IDS deployed in XDP, 806 BPF instructions, 1.8KB model</p>
+                    <h3>EarlyExit</h3>
+                    <p>Confidence-gated tail-call bypass for ~85% benign traffic</p>
                 </div>
+            </div>
+        </div>
+        <div class="finding-highlight stagger" style="margin-top: var(--content-gap);">
+            <p>Together: <strong>ZERO</strong> multiply instructions in the entire inference pipeline</p>
+        </div>
+    </div>
+    <div class="slide-num">03 / 12</div>
+</section>
+
+<!-- ============================================================ -->
+<!-- SLIDE 4: MapLUT Operator -->
+<!-- ============================================================ -->
+<section class="slide" id="slide-4">
+    <div class="slide-content reveal" style="align-items: center; gap: var(--content-gap);">
+        <h2 class="stagger">MapLUT Operator</h2>
+        <p class="stagger" style="text-align: center; color: var(--text-dim); font-size: var(--body-size);">
+            Layer 0: <span class="cyan">12 features × 64 neurons</span> = <span class="red">768 multiplications</span>
+        </p>
+        <div class="formula-block stagger">
+            <div class="formula" style="font-size: clamp(0.8rem, 2vw, 1.5rem);">bin = clamp((raw − offset) >> shift, 0, 63)</div>
+            <div class="formula" style="font-size: clamp(0.8rem, 2vw, 1.5rem); margin-top: 4px;">hidden[i] += <span class="cyan">LUT[j][bin][i]</span></div>
+            <p class="small" style="margin-top: 8px;">Only additions — zero multiplications</p>
+        </div>
+        <div class="insight-row stagger">
+            <div class="insight-box success">
+                <div class="insight-label green">Storage</div>
+                <div class="insight-value cyan">192 KB / CPU</div>
+                <p class="small" style="margin-top: 4px;">BPF PERCPU_ARRAY map</p>
+            </div>
+            <div class="insight-box success">
+                <div class="insight-label green">Hot Update</div>
+                <div class="insight-value cyan">bpf_map_update_elem()</div>
+                <p class="small" style="margin-top: 4px;">Model swap — zero downtime</p>
             </div>
         </div>
     </div>
@@ -846,35 +836,47 @@ p, li { font-size: var(--body-size); color: var(--text); }
 </section>
 
 <!-- ============================================================ -->
-<!-- SLIDE 5: Overflow Safety Theorem -->
+<!-- SLIDE 5: TernaryShift Operator -->
 <!-- ============================================================ -->
 <section class="slide" id="slide-5">
     <div class="slide-content reveal" style="align-items: center; gap: var(--content-gap);">
-        <h2 class="stagger">01 — Overflow Safety</h2>
-        <div class="formula-block stagger">
-            <div class="formula">b ≤ ⌊(63 − log₂ C<sub>k</sub>) / 2⌋</div>
-            <p class="small" style="margin-top: 8px;">where C<sub>k</sub> = max fan-in at layer k, b = scale factor bits</p>
+        <h2 class="stagger">TernaryShift Operator</h2>
+        <p class="stagger" style="text-align: center; color: var(--text-dim); font-size: var(--body-size);">
+            Weights quantized to <span class="cyan">{−α, 0, +α}</span>, packed <span class="cyan">16 per uint32</span>
+        </p>
+        <div class="pipeline stagger">
+            <div class="pipe-stage">
+                <div class="pipe-stage-name">Scan Bits</div>
+                <div class="pipe-stage-detail">2-bit decode</div>
+            </div>
+            <div class="pipe-arrow">→</div>
+            <div class="pipe-stage">
+                <div class="pipe-stage-name">Add / Sub</div>
+                <div class="pipe-stage-detail">conditional</div>
+            </div>
+            <div class="pipe-arrow">→</div>
+            <div class="pipe-stage">
+                <div class="pipe-stage-name">Left Shift</div>
+                <div class="pipe-stage-detail">× scale</div>
+            </div>
+            <div class="pipe-arrow">→</div>
+            <div class="pipe-stage" style="border-color: var(--green);">
+                <div class="pipe-stage-name green">Result</div>
+                <div class="pipe-stage-detail">0 multiplies</div>
+            </div>
         </div>
-        <div class="insight-row stagger">
-            <div class="insight-box danger">
-                <div class="insight-label red">⚠ Theory Says</div>
-                <div class="insight-value red">b=16 is UNSAFE</div>
-                <p class="small" style="margin-top: 4px;">b<sub>max</sub> = 14 for safe guarantee</p>
+        <div class="stats-row stagger" style="margin-top: var(--element-gap);">
+            <div class="stat-item">
+                <div class="stat-value">~43%</div>
+                <div class="stat-label">Weight Sparsity</div>
             </div>
-            <div class="insight-box success">
-                <div class="insight-label green">✓ Empirical Reality</div>
-                <div class="insight-value green">5,590× headroom</div>
-                <p class="small" style="margin-top: 4px;">Actual max ≪ theoretical max</p>
+            <div class="stat-item">
+                <div class="stat-value">2-bit</div>
+                <div class="stat-label">Packed Width</div>
             </div>
-        </div>
-        <div class="bar-compare stagger" style="margin-top: var(--element-gap);">
-            <div class="bar-row">
-                <div class="bar-label">Theoretical max</div>
-                <div class="bar-track"><div class="bar-fill red-bar" style="width: 100%">2⁶³</div></div>
-            </div>
-            <div class="bar-row">
-                <div class="bar-label">Actual max</div>
-                <div class="bar-track"><div class="bar-fill green-bar" style="width: 12%">12.4 bits</div></div>
+            <div class="stat-item">
+                <div class="stat-value">0</div>
+                <div class="stat-label">Multiply Instrs</div>
             </div>
         </div>
     </div>
@@ -882,268 +884,309 @@ p, li { font-size: var(--body-size); color: var(--text); }
 </section>
 
 <!-- ============================================================ -->
-<!-- SLIDE 6: Design Space Exploration -->
+<!-- SLIDE 6: EarlyExit Operator -->
 <!-- ============================================================ -->
 <section class="slide" id="slide-6">
     <div class="slide-content reveal" style="align-items: center; gap: var(--content-gap);">
-        <h2 class="stagger">02 — 48-Config Exploration</h2>
+        <h2 class="stagger">EarlyExit Operator</h2>
         <p class="stagger" style="text-align: center; color: var(--text-dim); font-size: var(--body-size);">
-            Search space: <span class="cyan">hidden_size</span> × <span class="cyan">layers</span> × <span class="cyan">scale_bits</span>
+            <span class="cyan">85.5%</span> of traffic is BENIGN — why run the full pipeline?
         </p>
-        <div style="max-width: min(90vw, 600px); margin: 0 auto; width: 100%;" class="stagger">
-            <div class="mini-data-row">
-                <div class="mini-data-label">b=8</div>
-                <div class="mini-data-bar"><div class="mini-data-fill" style="width: 72%">72%</div></div>
+        <div class="pipeline stagger">
+            <div class="pipe-stage">
+                <div class="pipe-stage-name">Layer 0</div>
+                <div class="pipe-stage-detail">MapLUT</div>
             </div>
-            <div class="mini-data-row">
-                <div class="mini-data-label">b=12</div>
-                <div class="mini-data-bar"><div class="mini-data-fill" style="width: 89%">89%</div></div>
+            <div class="pipe-arrow">→</div>
+            <div class="pipe-stage" style="border-color: var(--cyan);">
+                <div class="pipe-stage-name cyan">Exit Head</div>
+                <div class="pipe-stage-detail">logit margin</div>
             </div>
-            <div class="mini-data-row">
-                <div class="mini-data-label">b=16</div>
-                <div class="mini-data-bar"><div class="mini-data-fill critical" style="width: 99.6%">99.6%</div></div>
-            </div>
-            <div class="mini-data-row">
-                <div class="mini-data-label">b=20</div>
-                <div class="mini-data-bar"><div class="mini-data-fill" style="width: 99.6%">99.6%</div></div>
+            <div class="pipe-arrow">→</div>
+            <div class="pipe-stage" style="border-color: var(--green);">
+                <div class="pipe-stage-name green">CLASSIFY</div>
+                <div class="pipe-stage-detail">skip 2 tail calls</div>
             </div>
         </div>
-        <div class="finding-highlight stagger">
-            <p>b=16 is the critical threshold — <span class="dim">accuracy saturates beyond this point</span></p>
+        <div class="stagger" style="margin-top: var(--content-gap);">
+            <div class="big-number" style="font-size: clamp(2.5rem, 8vw, 6rem);">93%</div>
+            <div class="big-label">Early Exit Rate</div>
         </div>
-        <p class="small stagger" style="text-align: center;">Finding: h=8 already saturates at 99.6% accuracy</p>
+        <p class="small stagger" style="text-align: center;">If confident after Layer 0 → jump directly to CLASSIFY</p>
     </div>
     <div class="slide-num">06 / 12</div>
 </section>
 
 <!-- ============================================================ -->
-<!-- SLIDE 7: Pareto Front -->
+<!-- SLIDE 7: Zero-Multiply Verification ⭐ -->
 <!-- ============================================================ -->
 <section class="slide" id="slide-7">
     <div class="slide-content reveal" style="align-items: center; gap: var(--content-gap);">
-        <h2 class="stagger">Pareto Optimal</h2>
+        <h2 class="stagger">Zero-Multiply Verification ⭐</h2>
         <table class="data-table stagger">
             <thead>
                 <tr>
-                    <th>Config</th>
-                    <th>Accuracy</th>
-                    <th>Instructions</th>
-                    <th>Memory</th>
-                    <th></th>
+                    <th>Version</th>
+                    <th>Total BPF Insns</th>
+                    <th>Multiply Insns</th>
                 </tr>
             </thead>
             <tbody>
                 <tr>
-                    <td>h=8</td>
-                    <td>99.6%</td>
-                    <td>754</td>
-                    <td>656B</td>
-                    <td><span class="tag">smallest</span></td>
+                    <td>V0 — All Int32</td>
+                    <td>804</td>
+                    <td><strong class="red">15</strong></td>
+                </tr>
+                <tr>
+                    <td>V2 — Fused+Ternary+Exit</td>
+                    <td>1,437</td>
+                    <td><strong class="red">16</strong></td>
                 </tr>
                 <tr class="highlight">
-                    <td>h=16</td>
-                    <td>99.6%</td>
-                    <td>754</td>
-                    <td>1.8KB</td>
-                    <td><span class="tag">sweet spot</span></td>
-                </tr>
-                <tr>
-                    <td>h=32</td>
-                    <td>99.6%</td>
-                    <td>806</td>
-                    <td>5.6KB</td>
-                    <td></td>
-                </tr>
-                <tr>
-                    <td>h=64</td>
-                    <td>99.6%</td>
-                    <td>806</td>
-                    <td>19.5KB</td>
-                    <td></td>
+                    <td>V3 — MapLUT+Ternary+Exit</td>
+                    <td>1,424</td>
+                    <td><strong>0</strong></td>
                 </tr>
             </tbody>
         </table>
         <div class="finding-highlight stagger">
-            <p>30× less memory, same accuracy</p>
+            <p>First zero-multiply neural network in eBPF/XDP</p>
         </div>
     </div>
     <div class="slide-num">07 / 12</div>
 </section>
 
 <!-- ============================================================ -->
-<!-- SLIDE 8: System Architecture -->
+<!-- SLIDE 8: Accuracy Ablation -->
 <!-- ============================================================ -->
 <section class="slide" id="slide-8">
     <div class="slide-content reveal" style="align-items: center; gap: var(--content-gap);">
-        <h2 class="stagger">03 — Four-Stage Tail-Call Pipeline</h2>
-        <div class="pipeline stagger">
-            <div class="pipe-stage">
-                <div class="pipe-stage-name">Packet</div>
-                <div class="pipe-stage-detail">ingress</div>
-            </div>
-            <div class="pipe-arrow">→</div>
-            <div class="pipe-stage">
-                <div class="pipe-stage-name">Entry</div>
-                <div class="pipe-stage-detail">309 instrs</div>
-            </div>
-            <div class="pipe-arrow">→</div>
-            <div class="pipe-stage">
-                <div class="pipe-stage-name">Layer 0</div>
-                <div class="pipe-stage-detail">109 instrs</div>
-            </div>
-            <div class="pipe-arrow">→</div>
-            <div class="pipe-stage">
-                <div class="pipe-stage-name">Layer 1</div>
-                <div class="pipe-stage-detail">152 instrs</div>
-            </div>
-            <div class="pipe-arrow">→</div>
-            <div class="pipe-stage">
-                <div class="pipe-stage-name">Layer 2</div>
-                <div class="pipe-stage-detail">236 instrs</div>
-            </div>
-            <div class="pipe-arrow">→</div>
-            <div class="pipe-stage" style="border-color: var(--green);">
-                <div class="pipe-stage-name green">PASS / DROP</div>
-                <div class="pipe-stage-detail">XDP action</div>
-            </div>
-        </div>
-        <div class="stats-row stagger" style="margin-top: var(--element-gap);">
-            <div class="stat-item">
-                <div class="stat-value">Per-CPU</div>
-                <div class="stat-label">Scratch Map</div>
-            </div>
-            <div class="stat-item">
-                <div class="stat-value">Zero</div>
-                <div class="stat-label">Lock Contention</div>
-            </div>
-            <div class="stat-item">
-                <div class="stat-value">806</div>
-                <div class="stat-label">Total Instructions</div>
-            </div>
-        </div>
+        <h2 class="stagger">Accuracy Ablation</h2>
+        <table class="data-table stagger">
+            <thead>
+                <tr>
+                    <th>Mode</th>
+                    <th>Accuracy</th>
+                    <th>Macro F1</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>Float (reference)</td>
+                    <td>97.64%</td>
+                    <td>0.770</td>
+                </tr>
+                <tr>
+                    <td>Int32</td>
+                    <td>97.64%</td>
+                    <td>0.770</td>
+                </tr>
+                <tr>
+                    <td>MapLUT + Int32</td>
+                    <td>90.39%</td>
+                    <td>0.508</td>
+                </tr>
+                <tr>
+                    <td>Int32 + Ternary</td>
+                    <td>95.02%</td>
+                    <td>0.482</td>
+                </tr>
+                <tr>
+                    <td>MapLUT + Ternary</td>
+                    <td>92.10%</td>
+                    <td>0.501</td>
+                </tr>
+                <tr>
+                    <td>MapLUT + Ternary + Exit</td>
+                    <td>74.88%</td>
+                    <td>0.365</td>
+                </tr>
+            </tbody>
+        </table>
     </div>
     <div class="slide-num">08 / 12</div>
 </section>
 
 <!-- ============================================================ -->
-<!-- SLIDE 9: Results -->
+<!-- SLIDE 9: Bins vs Accuracy -->
 <!-- ============================================================ -->
 <section class="slide" id="slide-9">
     <div class="slide-content reveal" style="align-items: center; gap: var(--content-gap);">
-        <h2 class="stagger">Results</h2>
-        <div class="stagger">
-            <div class="big-number">99.6%</div>
-            <div class="big-label">Classification Accuracy</div>
-        </div>
-        <div class="stats-row stagger">
-            <div class="stat-item">
-                <div class="stat-value">4</div>
-                <div class="stat-label">Classes</div>
+        <h2 class="stagger">Bins vs Accuracy</h2>
+        <div style="max-width: min(90vw, 600px); margin: 0 auto; width: 100%;" class="stagger">
+            <div class="mini-data-row">
+                <div class="mini-data-label">16</div>
+                <div class="mini-data-bar"><div class="mini-data-fill" style="width: 85.5%">85.5%</div></div>
             </div>
-            <div class="stat-item">
-                <div class="stat-value">200K</div>
-                <div class="stat-label">Samples</div>
+            <div class="mini-data-row">
+                <div class="mini-data-label">64</div>
+                <div class="mini-data-bar"><div class="mini-data-fill critical" style="width: 92.1%">92.1%</div></div>
             </div>
-            <div class="stat-item">
-                <div class="stat-value">0.98</div>
-                <div class="stat-label">Macro-F1</div>
-            </div>
-            <div class="stat-item">
-                <div class="stat-value">754</div>
-                <div class="stat-label">BPF Instrs</div>
-            </div>
-            <div class="stat-item">
-                <div class="stat-value">1.8KB</div>
-                <div class="stat-label">Model Memory</div>
+            <div class="mini-data-row">
+                <div class="mini-data-label">256</div>
+                <div class="mini-data-bar"><div class="mini-data-fill" style="width: 94.2%">94.2%</div></div>
             </div>
         </div>
-        <p class="small stagger" style="text-align:center;">Benign · DDoS · PortScan · BruteForce</p>
+        <table class="data-table stagger">
+            <thead>
+                <tr>
+                    <th>Bins</th>
+                    <th>Accuracy</th>
+                    <th>LUT Memory</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>16</td>
+                    <td>85.5%</td>
+                    <td>48 KB</td>
+                </tr>
+                <tr class="highlight">
+                    <td>64</td>
+                    <td>92.1%</td>
+                    <td>192 KB</td>
+                </tr>
+                <tr>
+                    <td>256</td>
+                    <td>94.2%</td>
+                    <td>768 KB</td>
+                </tr>
+            </tbody>
+        </table>
+        <div class="finding-highlight stagger">
+            <p>More bins → higher accuracy, linear memory cost</p>
+        </div>
     </div>
     <div class="slide-num">09 / 12</div>
 </section>
 
 <!-- ============================================================ -->
-<!-- SLIDE 10: Comparison -->
+<!-- SLIDE 10: Memory Breakdown -->
 <!-- ============================================================ -->
 <section class="slide" id="slide-10">
     <div class="slide-content reveal" style="align-items: center; gap: var(--content-gap);">
-        <h2 class="stagger">vs. Prior Work</h2>
+        <h2 class="stagger">Memory Breakdown</h2>
         <table class="data-table stagger">
             <thead>
                 <tr>
-                    <th>System</th>
-                    <th>Classes</th>
-                    <th>Accuracy</th>
-                    <th>Memory</th>
+                    <th>Component</th>
+                    <th>Size</th>
                 </tr>
             </thead>
             <tbody>
                 <tr>
-                    <td>DT-eBPF</td>
-                    <td>2</td>
-                    <td>99%</td>
-                    <td>32KB+</td>
+                    <td>Model params (ternary + biases)</td>
+                    <td>1.8 KB</td>
                 </tr>
                 <tr>
-                    <td>NN-int8</td>
-                    <td>2</td>
-                    <td>~95%</td>
-                    <td>~2KB</td>
+                    <td>MapLUT (64 bins)</td>
+                    <td>192 KB / CPU</td>
                 </tr>
                 <tr>
-                    <td>NN-eBPF</td>
-                    <td>2</td>
-                    <td>99.2%</td>
-                    <td>5KB</td>
+                    <td>Per-CPU scratch</td>
+                    <td>~300 B / CPU</td>
                 </tr>
-                <tr class="highlight">
-                    <td>SAGE (ours)</td>
-                    <td><strong>4</strong></td>
-                    <td><strong>99.6%</strong></td>
-                    <td><strong>1.8KB</strong></td>
+                <tr>
+                    <td>Flow map (64K entries)</td>
+                    <td>~2 MB shared</td>
                 </tr>
             </tbody>
         </table>
-        <div class="finding-highlight stagger">
-            <p>More classes · Higher accuracy · Less memory</p>
+        <div class="stats-row stagger" style="margin-top: var(--element-gap);">
+            <div class="stat-item">
+                <div class="stat-value">~194 KB</div>
+                <div class="stat-label">Per CPU</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-value">~2 MB</div>
+                <div class="stat-label">Shared</div>
+            </div>
         </div>
     </div>
     <div class="slide-num">10 / 12</div>
 </section>
 
 <!-- ============================================================ -->
-<!-- SLIDE 11: Key Takeaways -->
+<!-- SLIDE 11: Related Work Comparison -->
 <!-- ============================================================ -->
 <section class="slide" id="slide-11">
     <div class="slide-content reveal" style="align-items: center; gap: var(--content-gap);">
-        <h2 class="stagger">Key Takeaways</h2>
-        <ul class="takeaway-list">
-            <li class="takeaway-item stagger">
-                <span class="takeaway-check">✓</span>
-                <span class="takeaway-text"><strong class="cyan">b=16</strong> is the architecture-invariant critical threshold for quantization scale</span>
-            </li>
-            <li class="takeaway-item stagger">
-                <span class="takeaway-check">✓</span>
-                <span class="takeaway-text">Theoretical overflow bound is <strong class="cyan">5,590× conservative</strong> — empirical safety far exceeds formal guarantees</span>
-            </li>
-            <li class="takeaway-item stagger">
-                <span class="takeaway-check">✓</span>
-                <span class="takeaway-text"><strong class="cyan">h=16 is Pareto-optimal</strong>: maximum accuracy with minimal resource footprint (1.8KB, 754 instrs)</span>
-            </li>
-        </ul>
+        <h2 class="stagger">vs. Related Work</h2>
+        <table class="data-table stagger">
+            <thead>
+                <tr>
+                    <th>System</th>
+                    <th>Model</th>
+                    <th>Classes</th>
+                    <th>Accuracy</th>
+                    <th>Zero-Mul?</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>DT-eBPF [Bachl'21]</td>
+                    <td>Decision Tree</td>
+                    <td>2</td>
+                    <td>~99%</td>
+                    <td class="dim">N/A</td>
+                </tr>
+                <tr>
+                    <td>NN-int8 [Hara'23]</td>
+                    <td>MLP int8</td>
+                    <td>2</td>
+                    <td>~95%</td>
+                    <td class="red">No</td>
+                </tr>
+                <tr>
+                    <td>NN-eBPF [Zhang'24]</td>
+                    <td>MLP int32</td>
+                    <td>2</td>
+                    <td>99.2%</td>
+                    <td class="red">No</td>
+                </tr>
+                <tr class="highlight">
+                    <td>SAGE (ours)</td>
+                    <td>MLP zero-mul</td>
+                    <td><strong>4</strong></td>
+                    <td><strong>97.6%</strong></td>
+                    <td><strong>Yes</strong></td>
+                </tr>
+            </tbody>
+        </table>
+        <div class="finding-highlight stagger">
+            <p>More classes · Zero multiplications · Comparable accuracy</p>
+        </div>
     </div>
     <div class="slide-num">11 / 12</div>
 </section>
 
 <!-- ============================================================ -->
-<!-- SLIDE 12: End -->
+<!-- SLIDE 12: Conclusion & Future Work -->
 <!-- ============================================================ -->
 <section class="slide end-slide" id="slide-12">
     <div class="slide-content reveal">
-        <div class="end-title stagger">Thank You<span class="cursor"></span></div>
-        <a href="https://github.com/usernameisveryok/sage-ebpf-ml" target="_blank" class="gh-link stagger">
-            github.com/usernameisveryok/sage-ebpf-ml
-        </a>
+        <div class="end-title stagger">Conclusion<span class="cursor"></span></div>
+        <ul class="takeaway-list stagger">
+            <li class="takeaway-item">
+                <span class="takeaway-check">✓</span>
+                <span class="takeaway-text">First <strong class="cyan">zero-multiply</strong> NN inference in eBPF/XDP</span>
+            </li>
+            <li class="takeaway-item">
+                <span class="takeaway-check">✓</span>
+                <span class="takeaway-text">MapLUT enables <strong class="cyan">hot-model-update</strong> without program reload</span>
+            </li>
+            <li class="takeaway-item">
+                <span class="takeaway-check">✓</span>
+                <span class="takeaway-text"><strong class="cyan">97.64%</strong> accuracy (float), <strong class="cyan">92.1%</strong> (zero-multiply pipeline)</span>
+            </li>
+            <li class="takeaway-item">
+                <span class="takeaway-check">✓</span>
+                <span class="takeaway-text"><strong class="cyan">1,424</strong> BPF instructions, <strong class="green">0</strong> multiplications</span>
+            </li>
+        </ul>
+        <p class="stagger small" style="text-align: center; margin-top: var(--content-gap);">
+            Future: live XDP deployment · online learning via map updates · attention operators
+        </p>
         <div class="terminal-prompt stagger" style="margin-top: var(--element-gap);">
             <span class="prompt-char">$</span> <span class="cmd">echo</span> <span class="flag">"Questions?"</span><span class="cursor"></span>
         </div>
