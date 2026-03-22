@@ -1,0 +1,10 @@
+{
+  "hidden_size": 16,
+  "num_layers": 1,
+  "scale_bits": 12,
+  "float_accuracy": 0.9921,
+  "int_accuracy": 0.7792,
+  "accuracy_delta": 0.21289999999999998,
+  "macro_f1": 0.9921512352044141,
+  "model_memory_bytes": 720
+}

@@ -1,0 +1,26 @@
+# Build artifacts
+*.o
+*.d
+build/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# LaTeX build artifacts
+paper/*.aux
+paper/*.bbl
+paper/*.blg
+paper/*.log
+paper/*.out
+paper/*.fdb_latexmk
+paper/*.fls
+paper/*.synctex.gz
+
+# Data (too large for git)
+data/*.npy
+data/*.csv
+
+# OS
+.DS_Store

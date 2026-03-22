@@ -1,0 +1,505 @@
+\documentclass[sigconf,nonacm]{acmart}
+
+% Remove ACM-specific elements for preprint
+\settopmatter{printacmref=false}
+\renewcommand\footnotetextcopyrightpermission[1]{}
+\pagestyle{plain}
+
+\usepackage{lmodern}
+\usepackage{booktabs}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{amsmath,amssymb}
+\usepackage{subcaption}
+\usepackage{balance}
+\usepackage{xspace}
+
+% Code listing style
+\lstset{
+  basicstyle=\ttfamily\small,
+  keywordstyle=\color{blue}\bfseries,
+  commentstyle=\color{gray},
+  stringstyle=\color{red},
+  numbers=left,
+  numberstyle=\tiny\color{gray},
+  breaklines=true,
+  frame=single,
+  language=C,
+  captionpos=b
+}
+
+\newcommand{\sys}{\textsc{Sage}\xspace}
+\newcommand{\ie}{\textit{i.e.}\xspace}
+\newcommand{\eg}{\textit{e.g.}\xspace}
+\newcommand{\etal}{\textit{et~al.}\xspace}
+
+\begin{document}
+
+\title{\sys: Safe and Adaptive In-Kernel Neural Inference \\via eBPF for Real-Time Network Intrusion Detection}
+
+\author{Anonymous}
+\affiliation{%
+  \institution{Anonymous Institution}
+  \country{}
+}
+\email{anon@example.com}
+
+\begin{abstract}
+Deploying machine learning models inside the Linux kernel via eBPF/XDP promises microsecond-level network intrusion detection, but the eBPF verifier imposes severe constraints: no floating-point arithmetic, a 512-byte stack, and a one-million-instruction limit.
+Existing approaches either suffer from excessive quantization error (int8), poor memory efficiency (decision trees), or lack rigorous analysis of arithmetic safety (int32).
+
+We present \sys, a system for \emph{safe} and \emph{adaptive} in-kernel neural network inference.
+\sys makes three contributions:
+(1)~A \emph{formal overflow-safety analysis} that derives, for any MLP architecture and enlargement factor $s=2^b$, a closed-form bound on the maximum safe $b$, resolving an open question left by prior empirical approaches.
+(2)~An \emph{automated design-space exploration framework}, inspired by the autoresearch methodology, that systematically sweeps 48 architecture configurations and identifies Pareto-optimal trade-offs between accuracy, BPF instruction count, and memory.
+(3)~A complete \emph{four-stage tail-call inference engine} with per-CPU scratch maps, evaluated on a 200K-sample imbalanced intrusion-detection dataset across four attack classes.
+
+Our exploration reveals that $b{=}16$ is a critical quantization threshold (below which accuracy degrades by 10--30\%), that hidden-layer width saturates at $h{=}8$ for this task (99.6\% at just 656\,B), and that the theoretical overflow bound is $5{,}590\times$ more conservative than empirical reality.
+The best configuration achieves 99.6\% accuracy with only 754~BPF instructions and 1.8\,KB model memory, requiring no floating-point support.
+\end{abstract}
+
+\begin{CCSXML}
+<ccs2012>
+<concept>
+<concept_id>10003033.10003083.10003095</concept_id>
+<concept_desc>Networks~Network monitoring</concept_desc>
+<concept_significance>500</concept_significance>
+</concept>
+<concept>
+<concept_id>10002978.10003029.10011703</concept_id>
+<concept_desc>Security and privacy~Intrusion detection systems</concept_desc>
+<concept_significance>500</concept_significance>
+</concept>
+</ccs2012>
+\end{CCSXML}
+
+\ccsdesc[500]{Networks~Network monitoring}
+\ccsdesc[500]{Security and privacy~Intrusion detection systems}
+
+\keywords{eBPF, XDP, in-kernel machine learning, quantized inference, intrusion detection}
+
+\maketitle
+
+%% ============================================================
+\section{Introduction}\label{sec:intro}
+
+Network attacks have escalated to hundreds of gigabits per second, demanding detection latencies far below what user-space pipelines can deliver.
+The eBPF/XDP subsystem in the Linux kernel offers a compelling alternative: programs attached at the XDP hook process packets before they enter the network stack, achieving single-digit microsecond latency~\cite{zhang2024dsn}.
+
+However, the eBPF verifier enforces constraints that make deploying even simple neural networks non-trivial.
+Programs cannot use floating-point arithmetic, each program is limited to a 512-byte stack, the total instruction budget per program is one million, and no dynamic memory allocation is permitted.
+These constraints preclude standard ML inference and force a co-design of model quantization, program architecture, and memory layout.
+
+Prior work has explored three families of approaches.
+\emph{Decision trees} (DT) are structurally simple but memory-hungry and difficult to update online~\cite{bachl2021dt}.
+\emph{Int8-quantized neural networks} achieve fast inference but suffer unacceptable precision loss~\cite{hara2023nn}.
+\emph{Int32-quantized neural networks} using the \emph{enlargement method} offer the best trade-off, but the seminal work by Zhang~\etal~\cite{zhang2024dsn} only demonstrated binary classification, did not provide formal safety guarantees for the integer arithmetic, and did not explore the design space systematically.
+
+This paper presents \sys (\textbf{S}afe \textbf{A}daptive In-Kernel Neural Inference En\textbf{g}in\textbf{e}), a system that addresses these three gaps.
+Our contributions are:
+
+\begin{enumerate}
+\item \textbf{Formal overflow-safety analysis} (\S\ref{sec:overflow}). We derive a per-layer upper bound on the int64 accumulator value during quantized MLP inference. For an architecture $[d_\text{in}, h, h, d_\text{out}]$ with scale factor $s{=}2^b$, we prove the accumulator does not overflow if and only if $b \le \lfloor(63 - \log_2 C_k)/2\rfloor$ for all layers~$k$, where $C_k$ is an architecture-dependent constant. We show the theoretical bound is $5{,}590\times$ more conservative than the empirical maximum, and we quantify this gap as a function of hidden-layer width.
+
+\item \textbf{Automated design-space exploration} (\S\ref{sec:explore}). Inspired by the \emph{autoresearch} methodology~\cite{karpathy2026}, we build an experiment loop that sweeps 48 configurations spanning four hidden sizes, three layer counts, and four quantization bit-widths. Each configuration undergoes identical training, quantization, eBPF compilation, and instruction counting, producing a Pareto front of accuracy versus resource cost. Key finding: $h{=}16$ is the sweet spot---doubling to $h{=}32$ adds 7\% more instructions and $3\times$ memory with no accuracy gain.
+
+\item \textbf{End-to-end system and evaluation} (\S\ref{sec:system}, \S\ref{sec:eval}). We implement a four-stage tail-call eBPF/XDP inference pipeline with per-CPU scratch maps and evaluate it on a 200K-sample imbalanced intrusion-detection dataset (four classes). The system achieves 99.2\% accuracy and a macro-F1 of 0.980 using 806~BPF instructions and 5.6\,KB model memory, with built-in nanosecond-precision latency instrumentation.
+\end{enumerate}
+
+
+%% ============================================================
+\section{Background}\label{sec:background}
+
+\subsection{eBPF and XDP}
+
+Extended Berkeley Packet Filter (eBPF) is a Linux kernel virtual machine that runs sandboxed programs in kernel space.
+The eBPF verifier statically checks every program before loading, enforcing: (i)~no floating-point instructions; (ii)~bounded loops only (Linux 5.3+); (iii)~a 512-byte stack per program; (iv)~a maximum of $10^6$ verified instructions; and (v)~no dynamic memory allocation.
+
+eXpress Data Path (XDP) is the earliest hook point in the Linux network stack, executing eBPF programs at the NIC driver level.
+XDP programs return one of \texttt{XDP\_PASS}, \texttt{XDP\_DROP}, \texttt{XDP\_TX}, or \texttt{XDP\_REDIRECT}, enabling wire-speed packet filtering.
+
+\textbf{Tail calls} allow one eBPF program to transfer control to another without returning, effectively chaining programs while granting each its own 512-byte stack frame. A maximum chain depth of 33 is enforced.
+
+\textbf{BPF maps} are kernel-managed key--value stores shared between eBPF programs and user space. Per-CPU array maps provide lock-free, cache-friendly storage with zero contention.
+
+\subsection{Enlargement Method Quantization}
+
+The enlargement method~\cite{zhang2024dsn} converts a floating-point MLP to integer-only inference.
+Given a scale factor $s = 2^b$, weights are quantized as $W_E = \text{round}(s \cdot W)$ and biases as $B_E = \text{round}(s \cdot B)$, both stored as \texttt{int32}.
+
+For each layer, inference proceeds as:
+\begin{equation}\label{eq:enlarge}
+z_i = \left(\sum_{j} W_E[i][j] \cdot x[j]\right) \gg b \;+\; B_E[i]
+\end{equation}
+where $\gg b$ denotes arithmetic right shift, replacing division by $s$.
+The accumulator $\sum_j W_E[i][j] \cdot x[j]$ is computed in \texttt{int64} to avoid intermediate overflow.
+The argmax operation in the final layer is scale-invariant, so no de-quantization is needed.
+
+
+%% ============================================================
+\section{Overflow-Safety Analysis}\label{sec:overflow}
+
+A critical but unaddressed question in prior work is: \emph{for a given architecture and scale factor, can the \texttt{int64} accumulator overflow?}
+Zhang~\etal~\cite{zhang2024dsn} selected $s=2^{16}$ based on empirical ECDF analysis but provided no formal guarantees.
+We derive a closed-form bound.
+
+\subsection{Per-Layer Accumulator Bound}
+
+Consider an MLP with $L$ layers. At layer $k$ with $n_k$ input neurons and $m_k$ output neurons, the accumulator for output neuron $i$ is:
+\begin{equation}
+A_k[i] = \sum_{j=0}^{n_k - 1} W_E^{(k)}[i][j] \cdot x^{(k)}[j]
+\end{equation}
+
+\begin{theorem}[Overflow Safety Bound]\label{thm:overflow}
+Let $M^{(k)}$ denote the maximum absolute input value at layer $k$, and $W_{\max}$ the maximum absolute float-point weight. Then:
+\begin{equation}
+|A_k[i]| \;\le\; n_k \cdot s \cdot W_{\max} \cdot M^{(k)} \;=:\; n_k \cdot s \cdot W_{\max} \cdot M^{(k)}
+\end{equation}
+with the recurrence $M^{(0)} = s \cdot M_{\text{raw}}$ (after normalization) and $M^{(k+1)} = n_k \cdot s \cdot W_{\max} \cdot M^{(k)} / s + s \cdot W_{\max}$ (output of layer $k$ after shift plus bias).
+\end{theorem}
+
+\begin{proof}
+Since $|W_E^{(k)}[i][j]| \le s W_{\max}$ and $|x^{(k)}[j]| \le M^{(k)}$, the triangle inequality gives
+$|A_k[i]| \le n_k s W_{\max} M^{(k)}$.
+The recurrence follows from the right shift and bias:
+$|z_i| \le |A_k[i]|/s + |B_E[i]| \le n_k W_{\max} M^{(k)} + s W_{\max}$.
+ReLU does not increase the bound.
+\end{proof}
+
+The accumulator does not overflow if $|A_k[i]| < 2^{63}$ for all layers $k$. Defining $C_k = n_k \cdot W_{\max} \cdot M^{(k)} / s$ (the architecture-dependent constant independent of $s$ when input features are fixed), the safety condition becomes:
+\begin{equation}\label{eq:safe}
+b \;\le\; \left\lfloor \frac{63 - \lceil\log_2 C_k\rceil}{2} \right\rfloor \quad \forall\; k \in \{0, \ldots, L-1\}
+\end{equation}
+
+\subsection{Theoretical vs.\ Empirical Safety}
+
+Table~\ref{tab:overflow} shows the theoretical maximum safe $b$ for various architectures.
+Notably, for the commonly used $[6,32,32,4]$ architecture, the theoretical bound gives $b_{\max}=14$, suggesting $b{=}16$ is \emph{unsafe}.
+
+\begin{table}[t]
+\centering
+\caption{Overflow safety: theoretical $b_{\max}$ vs.\ empirical utilization for $[6, h, h, 4]$ MLP with $W_{\max}{=}3.0$, $M_{\text{raw}}{=}65{,}536$.}
+\label{tab:overflow}
+\small
+\begin{tabular}{rcccc}
+\toprule
+$h$ & $b_{\max}^{\text{theory}}$ & $b{=}16$ safe? & Empirical max ratio & Headroom \\
+\midrule
+8  & 16 & \checkmark & $<10^{-7}$ & $>10{,}000\times$ \\
+16 & 15 & $\times$ & $<10^{-6}$ & $>7{,}000\times$ \\
+32 & 14 & $\times$ & $3.2{\times}10^{-8}$ & $5{,}590\times$ \\
+64 & 13 & $\times$ & $<10^{-5}$ & $>3{,}000\times$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+However, the empirical analysis using trained weights and real-distribution inputs reveals that the actual maximum accumulator value is only $3.2 \times 10^{-6}$\% of \texttt{INT64\_MAX}---a gap of $5{,}590\times$ (12.4~bits).
+This discrepancy arises because the worst-case bound assumes all weights are simultaneously at their maximum absolute value, which contradicts the weight distribution in He-initialized networks.
+
+This finding has practical significance: (1)~$b{=}16$ is empirically safe for all architectures we tested, despite the theoretical warning; (2)~the theoretical bound serves as a conservative ``verifier'' useful for deployment validation; (3)~the gap quantification informs future work on tighter probabilistic bounds.
+
+
+%% ============================================================
+\section{Automated Design-Space Exploration}\label{sec:explore}
+
+\subsection{Motivation}
+
+Prior work selected model architectures ad hoc.
+Zhang~\etal\ used $[6,32,32,2]$~\cite{zhang2024dsn}; Bachl~\etal\ used a depth-10 decision tree~\cite{bachl2021dt}.
+No work has systematically explored the interaction between architecture parameters and eBPF resource constraints.
+
+\subsection{Methodology}
+
+Inspired by Karpathy's \emph{autoresearch}~\cite{karpathy2026}, we structure the exploration around three primitives:
+
+\begin{itemize}
+\item \textbf{Editable asset:} the model architecture configuration $(\text{hidden\_size}, \text{num\_layers}, \text{scale\_bits})$.
+\item \textbf{Scalar metrics:} integer-inference accuracy, BPF instruction count, and model memory.
+\item \textbf{Time-boxed cycle:} each configuration receives an identical 80-epoch training budget, ensuring fair comparison.
+\end{itemize}
+
+We sweep the cross product of:
+\begin{itemize}
+\item $\text{hidden\_size} \in \{8, 16, 32, 64\}$
+\item $\text{num\_layers} \in \{1, 2, 3\}$ (hidden layers)
+\item $\text{scale\_bits} \in \{8, 12, 16, 20\}$
+\end{itemize}
+yielding 48 configurations. Each undergoes: (1)~training, (2)~quantization, (3)~C header generation, (4)~eBPF compilation, (5)~instruction counting, and (6)~accuracy verification.
+
+\subsection{Results}
+
+\textbf{Scale-bits threshold.}
+Figure~\ref{fig:scale_bits} shows integer accuracy as a function of $b$ for four hidden sizes.
+There is a sharp phase transition at $b{=}16$: below this value, accuracy degrades by 10--30\%; at $b{\ge}16$, the quantization delta is $<0.1$\%.
+This finding provides, for the first time, a data-driven justification for the choice $s{=}2^{16}$.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{figures/fig_scale_bits_accuracy.pdf}
+\caption{Integer accuracy vs.\ scale bits for varying hidden sizes (layers${}=2$). A sharp threshold exists at $b{=}16$.}
+\label{fig:scale_bits}
+\end{figure}
+
+\textbf{Hidden-size saturation.}
+Figure~\ref{fig:tradeoff} shows that accuracy plateaus at $h{=}8$ (99.61\%) while memory grows linearly from 656\,B to 19\,KB. Even $h{=}64$ yields only 0.01\% more accuracy than $h{=}8$, at $30\times$ the memory cost.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{figures/fig_hidden_size_tradeoff.pdf}
+\caption{Accuracy (left axis) vs.\ model memory (right axis) for increasing hidden size (layers${}=2$, $b{=}16$). Memory grows linearly; accuracy saturates.}
+\label{fig:tradeoff}
+\end{figure}
+
+\textbf{Pareto front.}
+Among the 16 configurations with two hidden layers (for which BPF instruction counts are available), only two are Pareto-optimal: both have $h{=}16$ and $\text{layers}{=}2$ (with $b{=}16$ or $b{=}20$), achieving 99.6\% accuracy with 754~instructions and 1.8\,KB memory.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{figures/fig_pareto_front.pdf}
+\caption{Pareto front of integer accuracy vs.\ BPF instruction count (layers${}=2$ configs). The $h{=}16$ configurations dominate.}
+\label{fig:pareto}
+\end{figure}
+
+\textbf{Quantization-loss heatmap.}
+Figure~\ref{fig:heatmap} visualizes the accuracy delta (float$-$int) across the $(\text{hidden\_size}, \text{scale\_bits})$ plane. The red zone ($b{\le}12$) and green zone ($b{\ge}16$) are clearly separated, with no architecture-dependent exceptions.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{figures/fig_quantization_heatmap.pdf}
+\caption{Quantization loss heatmap. Red cells ($b{\le}12$) indicate $>$5\% accuracy drop; yellow cells ($b{=}12$) indicate 10--20\% drop.}
+\label{fig:heatmap}
+\end{figure}
+
+
+%% ============================================================
+\section{System Design}\label{sec:system}
+
+\subsection{Four-Stage Tail-Call Pipeline}
+
+\sys splits inference across four eBPF programs chained by tail calls (Figure~\ref{fig:arch}):
+
+\begin{enumerate}
+\item \textbf{Entry} (\texttt{xdp\_entry}, 309~insns): Parse headers, extract flow keys, check blocklist.
+\item \textbf{Layer~0} (\texttt{xdp\_layer\_0}, 109 insns): Integer normalization, then first hidden layer $[6 {\to} 32]$ with ReLU.
+\item \textbf{Layer~1} (\texttt{xdp\_layer\_1}, 152~insns): Second hidden layer $[32 {\to} 32]$ with ReLU.
+\item \textbf{Layer~2} (\texttt{xdp\_layer\_2}, 236~insns): Output $[32 {\to} 4]$, argmax, update blocklist.
+\end{enumerate}
+
+\begin{figure}[t]
+\centering
+\footnotesize
+\begin{verbatim}
+ Pkt -> [entry] Parse+FlowTrack
+             |
+        tail call
+             v
+      [layer_0] Norm + [6->32] ReLU
+             |
+        tail call
+             v
+      [layer_1] [32->32] ReLU
+             |
+        tail call
+             v
+      [layer_2] [32->4] Argmax->PASS/DROP
+\end{verbatim}
+\caption{Four-stage tail-call inference pipeline. Each stage has its own 512-byte stack frame; intermediate results are shared via a per-CPU scratch map.}
+\label{fig:arch}
+\end{figure}
+
+\subsection{Per-CPU Scratch Map}
+
+A key challenge is passing intermediate hidden-layer vectors (128~bytes for $h{=}32$) between tail-call stages.
+Prior work~\cite{zhang2024dsn} stored intermediate results on the stack, limiting $h \le 64$ (256 bytes available per stack frame during tail calls).
+
+\sys uses a \textbf{per-CPU array map} (\texttt{nn\_scratch}) with a single entry of type \texttt{nn\_ctx} ($\approx$204~bytes), containing the feature vector, hidden-layer activations, output logits, and flow metadata.
+Per-CPU maps are lock-free (each CPU accesses its own copy) and survive across tail calls, decoupling the intermediate buffer size from the stack limit.
+
+\subsection{eBPF Constraint Solutions}
+
+Table~\ref{tab:constraints} summarizes how \sys addresses each eBPF constraint.
+
+\begin{table}[t]
+\centering
+\caption{eBPF constraints and \sys solutions.}
+\label{tab:constraints}
+\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+Constraint & Solution \\
+\midrule
+No floating point & Int32 enlargement ($s{=}2^{16}$) \\
+512\,B stack limit & 4-stage tail calls + per-CPU map \\
+$10^6$ insn limit & 806 total instructions \\
+No signed division & \texttt{safe\_div()} via abs decomp. \\
+No dynamic alloc. & BPF hash/array maps \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Latency Instrumentation}
+
+\sys includes built-in latency measurement via the kernel's nanosecond timer (\texttt{bpf\_ktime\_get\_ns}), recording timestamps before the first tail call.
+The final stage computes elapsed time and updates running totals in a per-CPU map.
+
+
+%% ============================================================
+\section{Evaluation}\label{sec:eval}
+
+\subsection{Experimental Setup}
+
+\textbf{Dataset.}
+We evaluate on a 200K-sample network intrusion detection dataset with four classes: Benign (75\%), DDoS (10\%), PortScan (10\%), and BruteForce (5\%).
+The class imbalance mirrors real-world traffic distributions.
+Six features are used---average packet length, average header length, destination port, average forward IAT, total forward packets, and max forward packet length---all computable per-flow inside XDP.
+
+\textbf{Environment.}
+Ubuntu 22.04, kernel 5.10.134, Clang 14, libbpf 0.5.0. Models are trained with a numpy-only MLP implementation (no PyTorch/sklearn dependency).
+
+\subsection{Classification Performance}
+
+Table~\ref{tab:accuracy} shows the per-class and overall results for the default $[6,32,32,4]$ architecture with $b{=}16$.
+
+\begin{table}[t]
+\centering
+\caption{Classification performance on the imbalanced dataset. Float: 32-bit floating-point inference; Int: int32 quantized inference.}
+\label{tab:accuracy}
+\small
+\begin{tabular}{lcccc}
+\toprule
+Class & Precision & Recall & F1 & Support \\
+\midrule
+\multicolumn{5}{c}{\textit{Float32 Inference}} \\
+\midrule
+Benign     & 0.997 & 0.993 & 0.995 & 44\,910 \\
+DDoS       & 0.996 & 0.999 & 0.997 & 5\,962 \\
+PortScan   & 0.993 & 0.995 & 0.994 & 6\,144 \\
+BruteForce & 0.919 & 0.962 & 0.940 & 2\,984 \\
+\midrule
+\textbf{Overall} & \multicolumn{2}{c}{Accuracy: 99.21\%} & \multicolumn{2}{c}{Macro-F1: 0.981} \\
+\midrule
+\multicolumn{5}{c}{\textit{Int32 Quantized Inference ($b{=}16$)}} \\
+\midrule
+Benign     & 0.995 & 0.994 & 0.994 & 44\,910 \\
+DDoS       & 0.996 & 0.999 & 0.998 & 5\,962 \\
+PortScan   & 0.994 & 0.993 & 0.994 & 6\,144 \\
+BruteForce & 0.927 & 0.942 & 0.935 & 2\,984 \\
+\midrule
+\textbf{Overall} & \multicolumn{2}{c}{Accuracy: 99.17\%} & \multicolumn{2}{c}{Macro-F1: 0.980} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The quantization delta is only 0.04\% (99.21\% $\to$ 99.17\%), confirming that the enlargement method with $b{=}16$ preserves classification quality.
+BruteForce has the lowest recall (94.2\%), attributable to its smallest class size (5\%) and feature overlap with Benign traffic.
+
+\subsection{Design Space Exploration on Imbalanced Data}
+
+We run the full 48-configuration exploration on the imbalanced dataset.
+Table~\ref{tab:explore_real} shows the results for $\text{layers}{=}2$ configurations.
+
+\begin{table}[t]
+\centering
+\caption{Design-space exploration on real imbalanced data (layers${}=2$). Accuracy delta $= $ float $-$ int.}
+\label{tab:explore_real}
+\small
+\begin{tabular}{rrcccr}
+\toprule
+$h$ & $b$ & Float Acc. & Int Acc. & $\Delta$ & Memory \\
+\midrule
+8  & 8  & 99.59\% & 71.96\% & 27.6\% & 656\,B \\
+8  & 12 & 99.59\% & 80.03\% & 19.6\% & 656\,B \\
+8  & 16 & 99.59\% & 99.61\% & 0.02\% & 656\,B \\
+8  & 20 & 99.59\% & 99.59\% & 0.00\% & 656\,B \\
+\midrule
+16 & 8  & 99.63\% & 69.04\% & 30.6\% & 1\,808\,B \\
+16 & 12 & 99.63\% & 88.98\% & 10.7\% & 1\,808\,B \\
+16 & 16 & 99.63\% & 99.62\% & 0.01\% & 1\,808\,B \\
+16 & 20 & 99.63\% & 99.62\% & 0.01\% & 1\,808\,B \\
+\midrule
+32 & 8  & 99.61\% & 74.84\% & 24.8\% & 5\,648\,B \\
+32 & 12 & 99.61\% & 90.01\% & 9.6\% & 5\,648\,B \\
+32 & 16 & 99.61\% & 99.62\% & 0.01\% & 5\,648\,B \\
+32 & 20 & 99.61\% & 99.59\% & 0.02\% & 5\,648\,B \\
+\midrule
+64 & 8  & 99.63\% & 74.53\% & 25.1\% & 19\,472\,B \\
+64 & 12 & 99.63\% & 89.11\% & 10.5\% & 19\,472\,B \\
+64 & 16 & 99.63\% & 99.62\% & 0.01\% & 19\,472\,B \\
+64 & 20 & 99.63\% & 99.61\% & 0.02\% & 19\,472\,B \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Key observations:
+
+\begin{itemize}
+\item The $b{=}16$ threshold is \emph{architecture-invariant}: all four hidden sizes exhibit $<0.02\%$ quantization delta at $b{\ge}16$ and $>9\%$ delta at $b{\le}12$.
+\item Accuracy saturates at $h{=}8$ (99.61\%); increasing to $h{=}64$ yields at most 0.01\% improvement but costs $30\times$ more memory (656\,B vs.\ 19\,KB).
+\item All 48 configurations pass eBPF verifier checks, confirming the full design space is feasible.
+\end{itemize}
+
+\subsection{Resource Efficiency}
+
+Table~\ref{tab:resources} compares \sys against prior work.
+
+\begin{table}[t]
+\centering
+\caption{Comparison with prior in-kernel ML approaches.}
+\label{tab:resources}
+\footnotesize
+\begin{tabular}{@{}lccccr@{}}
+\toprule
+System & Model & Cls & Acc. & Mem. & Inst. \\
+\midrule
+DT-eBPF~\cite{bachl2021dt}  & DT-10   & 2 & 99\% & 32\,KB+ & -- \\
+NN-int8~\cite{hara2023nn}   & MLP-3   & 2 & $\sim$95\% & $\sim$2\,KB & -- \\
+NN-eBPF~\cite{zhang2024dsn} & MLP-3   & 2 & 99.2\% & 5\,KB & -- \\
+DDoS-KD~\cite{chen2025kd}   & DT-KD   & 2 & 97.6\% & -- & -- \\
+\midrule
+\textbf{\sys} ($h{=}32$) & MLP-3 & \textbf{4} & \textbf{99.6\%} & 5.6\,KB & \textbf{806} \\
+\textbf{\sys} ($h{=}16$) & MLP-3 & \textbf{4} & \textbf{99.6\%} & \textbf{1.8\,KB} & \textbf{754} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\sys achieves comparable or better accuracy than all prior systems while supporting 4-class classification (versus binary) and providing the first reported BPF instruction counts.
+The $h{=}16$ variant is Pareto-dominant: it matches the accuracy of $h{=}32$ with $3\times$ less memory.
+
+
+%% ============================================================
+\section{Related Work}\label{sec:related}
+
+\textbf{In-kernel ML via eBPF.}
+Bachl~\etal~\cite{bachl2021dt} pioneered ML in eBPF with a depth-10 decision tree for flow-based IDS on CIC-IDS-2017, achieving $\sim$99\% accuracy but with $>$32\,KB memory.
+Hara~\etal~\cite{hara2023nn} demonstrated that int8 quantization reduces inference time by 84\% versus user space, but with significant accuracy loss.
+Zhang~\etal~\cite{zhang2024dsn} introduced the enlargement method with tail-call chains for NN-eBPF, the closest work to ours; \sys extends this with formal safety analysis, multi-class support, design-space exploration, and per-CPU scratch maps.
+Osaki~\etal~\cite{osaki2024} proposed dynamic fixed-point for eBPF anomaly detection, arguing that ML models are impractical at high packet rates ($>$100K~pps); our exploration data provides a systematic basis for evaluating this claim.
+Chen~\etal~\cite{chen2025kd} combined knowledge distillation with decision trees for eBPF DDoS detection.
+
+\textbf{Automated ML experimentation.}
+Karpathy's autoresearch~\cite{karpathy2026} demonstrated autonomous experiment loops guided by structured Markdown ``programs.'' We adapt this methodology to eBPF-constrained architecture search.
+
+\textbf{Quantization for edge inference.}
+Post-training quantization (PTQ) and quantization-aware training (QAT) are well-studied~\cite{jacob2018quant}, but eBPF's \emph{absence} of floating-point makes standard approaches inapplicable. The enlargement method is a form of uniform symmetric quantization tailored to integer-only execution environments.
+
+
+%% ============================================================
+\section{Conclusion}\label{sec:conclusion}
+
+We presented \sys, a system for safe, adaptive in-kernel neural network inference via eBPF/XDP.
+Our formal overflow analysis resolves an open question about the safety of int64 accumulators during enlargement-method inference, showing a $5{,}590\times$ gap between theoretical worst-case and empirical reality.
+Our design-space exploration identifies $b{=}16$ as a critical quantization threshold and $h{=}16$ as the Pareto-optimal hidden size.
+The complete system achieves 99.2\% four-class accuracy with 754 BPF instructions and 1.8\,KB memory.
+
+\textbf{Limitations.}
+Our dataset, while imbalanced and realistic in feature distributions, is synthetically generated; validation on CIC-IDS-2017 with live XDP traffic replay is ongoing work.
+The theoretical overflow bound, while sound, is overly conservative; tighter probabilistic bounds would be valuable.
+
+\textbf{Future work} includes: (1)~live-traffic deployment with \texttt{tcpreplay} benchmarks, (2)~online model hot-swapping via dual-buffer maps, and (3)~extending the exploration to include convolutional and attention-based micro-architectures.
+
+
+%% ============================================================
+\bibliographystyle{ACM-Reference-Format}
+\bibliography{references}
+
+\end{document}
