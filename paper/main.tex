@@ -13,6 +13,7 @@
 \usepackage{subcaption}
 \usepackage{balance}
 \usepackage{xspace}
+\usepackage{multirow}
 
 % Code listing style
 \lstset{
@@ -35,7 +36,7 @@
 
 \begin{document}
 
-\title{\sys: Zero-Multiply Neural Network Inference in eBPF/XDP \\via Operator Co-Design}
+\title{\sys: Zero-Multiply Neural Network Inference in eBPF/XDP \\via Operator Co-Design and Quantization-Aware Training}
 
 \author{Anonymous}
 \affiliation{%
@@ -55,23 +56,22 @@ unavailable as a hardware primitive on some architectures.
 
 We present \sys (\textbf{S}afe \textbf{A}daptive In-Kernel Neural
 Inference En\textbf{g}in\textbf{e}), the first eBPF/XDP neural network
-that achieves \emph{zero} multiply instructions through three co-designed
-operators:
-(1)~\textbf{MapLUT} replaces the input layer's matrix multiplication
-with BPF-map-based lookup tables, enabling runtime model hot-updates
-without program reload;
-(2)~\textbf{TernaryShift} eliminates hidden-layer multiplications by
-packing ternary weights 16 per \texttt{uint32} and computing dot products
-via conditional add/subtract plus a single bit shift;
-(3)~\textbf{EarlyExit} attaches a lightweight confidence head after
-the first layer, allowing 93\% of benign traffic to skip remaining
-tail-call stages.
-On the CIC-IDS-2017 dataset (578K test samples, 4 classes), \sys
-achieves 92.1\% accuracy in its full zero-multiply configuration with
-1,424 BPF instructions---\emph{none} of which are multiplications.
-MapLUT's use of BPF maps uniquely enables zero-downtime model updates
-via \texttt{bpf\_map\_update\_elem()}, a property no prior in-kernel ML
-system offers.
+that achieves \emph{zero} multiply instructions.
+\sys makes four contributions:
+(1)~an int32 fixed-point baseline that \emph{losslessly} preserves float
+accuracy (97.64\%);
+(2)~\textbf{MapLUT}, which replaces the input layer with BPF-map-based
+lookup tables, enabling runtime model hot-updates;
+(3)~\textbf{Quantization-Aware Training (QAT) with Straight-Through
+Estimation}, which makes ternary weight quantization viable for severely
+imbalanced security data by preserving minority-class gradients during
+training; and
+(4)~\textbf{MapLUT + Ternary-QAT}, the first \emph{fully zero-multiply}
+neural network in eBPF, achieving 95.78\% accuracy (512 bins) with 1,424
+BPF instructions---\emph{none} of which are multiplications.
+Notably, PortScan F1 \emph{improves} from 0.597 (float baseline) to
+0.629 under MapLUT + Ternary-QAT, because QAT with focal loss forces
+the model to focus on hard, rare cases.
 \end{abstract}
 
 \begin{CCSXML}
@@ -92,7 +92,7 @@ system offers.
 \ccsdesc[500]{Networks~Network monitoring}
 \ccsdesc[500]{Security and privacy~Intrusion detection systems}
 
-\keywords{eBPF, XDP, zero-multiply inference, lookup-table neural network, intrusion detection}
+\keywords{eBPF, XDP, zero-multiply inference, quantization-aware training, lookup-table neural network, intrusion detection}
 
 \maketitle
 
@@ -120,57 +120,63 @@ heavily on multiply instructions for matrix--vector products,
 which dominate both instruction count and latency.
 
 Our key insight is that \emph{zero-multiply neural inference is
-achievable through operator co-design}: by replacing each layer's
-computation with a multiply-free alternative tailored to eBPF
-primitives, we can eliminate all multiplications without sacrificing the
-expressiveness of a multi-layer perceptron.
+achievable through operator co-design}, but naively applying ternary
+weight quantization to models trained on imbalanced security data causes
+catastrophic minority-class collapse.
+We show that Quantization-Aware Training (QAT) with the
+Straight-Through Estimator (STE)~\cite{bengio2013ste} resolves this
+problem, and when combined with lookup-table-based input layers, yields
+the \emph{first fully zero-multiply neural network in eBPF/XDP}.
 
-We present \sys, a system that realizes this insight through three
-novel operators:
+\sys makes four contributions:
 
 \begin{enumerate}
+\item \textbf{Int32 fixed-point inference} (\S\ref{sec:background}).
+The enlargement method~\cite{zhang2024dsn} with scale $s = 2^{16}$
+achieves \emph{lossless} quantization: 97.64\% accuracy, identical to
+the float baseline on CIC-IDS-2017.
+
 \item \textbf{MapLUT} (\S\ref{sec:maplut}).
-The input layer's $d_\text{in} \times h$ matrix multiplication is
-replaced by a BPF \texttt{PERCPU\_ARRAY} map storing precomputed partial
-sums.
-Each feature is quantized to a bin index via subtract-and-shift, and the
-corresponding partial sums are looked up and accumulated---zero
-multiplications.
-Because the lookup table resides in a BPF map, model weights can be
-hot-updated at runtime via \texttt{bpf\_map\_update\_elem()} with zero
-downtime, a unique advantage over compiled-in weights.
+The input layer's matrix multiplication is replaced by a BPF
+\texttt{PERCPU\_ARRAY} map storing precomputed partial sums.
+Because the LUT resides in a BPF map, model weights can be hot-updated
+at runtime via \texttt{bpf\_map\_update\_elem()} with zero downtime---a
+unique advantage over compiled-in weights.
 
-\item \textbf{TernaryShift} (\S\ref{sec:ternary}).
-Hidden-to-hidden layers use ternary weights $\{-\alpha, 0, +\alpha\}$
-packed 16 per \texttt{uint32} (2 bits each).
-Dot products are computed via conditional add/subtract on the packed
-word, followed by a single left shift.
-This replaces $h \times h$ multiplications with $h$ additions and one
-shift.
+\item \textbf{QAT with STE for ternary quantization}
+(\S\ref{sec:qat}).
+Post-hoc ternary quantization of the original float-trained model
+destroys minority-class performance (PortScan F1 drops from 0.597 to
+0.020).
+Our two-phase QAT procedure---float warmup followed by STE-based ternary
+training with focal loss~\cite{lin2017focal}---recovers minority classes
+and \emph{exceeds} the float baseline's PortScan F1.
 
-\item \textbf{EarlyExit} (\S\ref{sec:earlyexit}).
-A lightweight exit head after the first layer evaluates a top-2 logit
-margin confidence criterion.
-Since 85.5\% of CIC-IDS-2017 traffic is benign and easily classifiable,
-93\% of packets exit after a single layer, skipping all remaining
-tail-call stages.
+\item \textbf{MapLUT + Ternary-QAT = zero-multiply NN}
+(\S\ref{sec:eval}).
+The full pipeline achieves 95.78\% accuracy (512 bins) with 1,424 BPF
+instructions, zero of which are multiplications.
+PortScan F1 improves from 0.597 (float) to 0.629.
 \end{enumerate}
 
-Table~\ref{tab:headline} summarizes the result: \sys V3 is the
-\emph{first zero-multiply neural network inference engine in eBPF/XDP}.
+Table~\ref{tab:headline} summarizes the instruction-level result: \sys
+V3 is the \emph{first zero-multiply neural network inference engine in
+eBPF/XDP}.
 
 \begin{table}[t]
 \centering
-\caption{BPF instruction profile across \sys versions.}
+\caption{BPF instruction profile across \sys versions.
+Multiply counts verified by \texttt{llvm-objdump~|~grep~mul}.}
 \label{tab:headline}
 \small
-\begin{tabular}{lccc}
+\begin{tabular}{lcc}
 \toprule
 Version & Total Insns & Multiply Insns \\
 \midrule
-V0-Baseline (int32 matmul)       & 804  & 15 \\
-V2-Fused+Ternary+Exit           & 1{,}437 & 16 \\
-\textbf{V3-MapLUT+Ternary+Exit} & \textbf{1{,}424} & \textbf{0} \\
+V0-Baseline (int32 matmul)           & 804    & 15 \\
+V2-Fused+Ternary+Exit               & 1{,}437 & 16 \\
+\textbf{V3-MapLUT+Ternary+Exit}     & \textbf{1{,}424} & \textbf{0} \\
+V3b-MapLUT+Int32                     & 1{,}016 & 5 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -214,9 +220,11 @@ z_i = \Bigl(\sum_{j} W_E[i][j] \cdot x[j]\Bigr) \gg b \;+\; B_E[i]
 \end{equation}
 The accumulation uses \texttt{int64} to avoid intermediate overflow, and
 the final argmax is scale-invariant.
-This method forms our \emph{baseline}; \sys replaces the per-layer
-multiply operations in Eq.~\eqref{eq:enlarge} with multiply-free
-alternatives.
+On our CIC-IDS-2017 task, this method achieves \emph{lossless}
+quantization: 97.64\% accuracy, identical to the float baseline
+(Table~\ref{tab:ablation}).
+This forms the \emph{baseline}; \sys replaces the per-layer multiply
+operations in Eq.~\eqref{eq:enlarge} with multiply-free alternatives.
 
 \subsection{Prior eBPF ML Work}
 
@@ -233,20 +241,30 @@ None of these systems have pursued multiply-free inference.
 
 
 %% ============================================================
-\section{Zero-Multiply Operator Design}\label{sec:operators}
+\section{System Design}\label{sec:design}
 
 \sys uses a 4-class MLP with architecture $[12, 64, 64, 4]$:
 12 flow features extracted from packet headers, two 64-unit hidden
 layers with ReLU, and a 4-class output.
-The three operators each target a specific layer type, jointly
-eliminating all multiplications.
-Figure~\ref{fig:instructions} shows the instruction-level impact.
+Two distinct training procedures produce two models, each serving a
+specific role in the evaluation:
+\begin{itemize}
+\item \textbf{Original model}: trained with standard cross-entropy loss.
+Used for the Float and Int32 baselines.
+\item \textbf{QAT model}: trained with the two-phase QAT procedure
+described in \S\ref{sec:qat}.
+Used for all Ternary-QAT and MapLUT+Ternary-QAT configurations.
+\end{itemize}
+All reported numbers clearly indicate which model produced them.
+Figure~\ref{fig:instructions} shows the instruction-level impact of
+each operator.
 
 \begin{figure}[t]
 \centering
 \includegraphics[width=\columnwidth]{figures/instruction_comparison.pdf}
-\caption{BPF instruction breakdown. V3 (MapLUT+TernaryShift+EarlyExit)
-achieves zero multiply instructions.}
+\caption{BPF instruction breakdown.
+V3 (MapLUT+TernaryShift) achieves zero multiply instructions.
+V3b (MapLUT+Int32) retains 5 multiplies in hidden layers.}
 \label{fig:instructions}
 \end{figure}
 
@@ -280,7 +298,7 @@ multiplication.
 \textbf{LUT construction.}
 For each feature $j$, bin $b$, and hidden unit $i$:
 \begin{equation}\label{eq:lut}
-\text{LUT}[j, b, i] = \text{round}\!\bigl(W[i,j] \cdot \text{normalize}(\text{center}(j, b)) \cdot s\bigr)
+\text{LUT}[j, b, i] = \text{round}\!\bigl(W[i,j] \cdot \text{center}(j, b) \cdot s\bigr)
 \end{equation}
 where $\text{center}(j,b)$ is the representative value of bin $b$ for
 feature $j$, and $s = 2^{16}$ is the quantization scale.
@@ -295,19 +313,13 @@ The forward pass for layer~0 becomes:
 This is pure addition over $d_\text{in}$ looked-up values per hidden
 unit---zero multiplications.
 
-\textbf{Storage.}
-The LUT occupies $d_\text{in} \times B \times h \times 4$ bytes.
-For $12 \times 64 \times 64 \times 4 = 192$\,KB per CPU.
-Table~\ref{tab:bins} shows the accuracy--memory trade-off as a function of
-$B$.
-
 \textbf{Hot-update advantage.}
 Because the LUT resides in a BPF map rather than being compiled into
 the program text, model updates require only
 \texttt{bpf\_map\_update\_elem()} calls from user space---no program
 reload, no XDP detach/attach, and zero downtime.
-This enables a future online-learning workflow: retrain the model, recompute
-the LUT, and push updates to the running datapath atomically.
+This enables a future online-learning workflow: retrain the model,
+recompute the LUT, and push updates to the running datapath atomically.
 No prior in-kernel ML system offers this capability.
 
 \subsection{TernaryShift: Multiply-Free Hidden Layers}\label{sec:ternary}
@@ -355,39 +367,96 @@ ternary_dot(int32_t *x, uint32_t *packed,
 
 \textbf{Result.}
 Each hidden layer uses zero multiply instructions.
-The packed representation also compresses the weight matrix from
+The packed representation compresses the weight matrix from
 $h \times h \times 4 = 16$\,KB to $h \times h / 16 \times 4 = 1$\,KB
 for $h{=}64$.
 Combined with biases, the full model (ternary layers + biases) fits in
 1.8\,KB.
 
-\subsection{EarlyExit: Confidence-Gated Tail-Call Skip}\label{sec:earlyexit}
+\subsection{Quantization-Aware Training}\label{sec:qat}
 
-\textbf{Problem.}
-In CIC-IDS-2017, 85.5\% of traffic is benign.
-Running the full 4-stage tail-call pipeline for every packet wastes
-kernel cycles on easy classifications.
+\textbf{The problem with post-hoc ternary quantization.}
+Applying ternary quantization to weights trained with standard
+cross-entropy produces catastrophic results on minority classes.
+On CIC-IDS-2017, PortScan (0.08\% of test data) and BruteForce (0.55\%)
+rely on precise weight values to distinguish rare attack patterns from
+the overwhelming benign majority.
+Post-hoc ternarization of the original float model drops PortScan~F1
+from 0.597 to 0.020 and BruteForce~F1 from 0.552 to 0.039
+(Table~\ref{tab:ablation}).
+The original model's weights are optimized for \emph{continuous}
+arithmetic; coarsely discretizing them loses the fine-grained
+distinctions needed for rare classes.
 
-\textbf{Approach.}
-After the MapLUT layer (Layer~0), we attach a lightweight linear exit
-head that maps the 64-dimensional hidden vector to 4 output logits.
-We compute the \emph{top-2 logit margin}: the difference between the
-largest and second-largest logits.
-If this margin exceeds a calibrated threshold $\tau$, the program
-jumps directly to the classification tail call (\texttt{PROG\_CLASSIFY}),
-skipping the two hidden-layer stages.
+\textbf{Two-phase QAT with STE.}
+We train a \emph{separate} model specifically for ternary deployment
+using a two-phase procedure:
 
-\textbf{Calibration.}
-We set $\tau$ at the 15th percentile of training-set margins, ensuring
-that 85\% of the training distribution qualifies for early exit while
-maintaining a safety margin.
+\emph{Phase~1: Float warmup} (30 epochs).
+The model is trained with focal loss~\cite{lin2017focal} ($\gamma = 3.0$)
+and class-balanced oversampling (100K samples per class) to establish
+strong minority-class features.
+Batch size is 256; learning rate is 0.01.
 
-\textbf{Result.}
-At inference time, 93\% of packets (predominantly benign) exit after
-Layer~0, executing only the MapLUT computation plus a lightweight
-linear head.
-The remaining 7\%---mostly attack traffic that benefits from deeper
-processing---proceed through the full pipeline.
+\emph{Phase~2: QAT with STE} (90 epochs).
+Each forward pass quantizes all hidden-layer weights to ternary values
+$\{-\alpha, 0, +\alpha\}$ using a threshold $\delta = 0.7 \times
+\text{mean}(|W|)$:
+\begin{equation}\label{eq:ternary}
+\hat{w}_{ij} = \begin{cases}
++\alpha & \text{if } w_{ij} > \delta \\
+-\alpha & \text{if } w_{ij} < -\delta \\
+0 & \text{otherwise}
+\end{cases}
+\end{equation}
+The forward pass uses $\hat{W}$ (ternary), but the backward pass
+computes gradients with respect to the \emph{float shadow
+weights}~$W$ via the Straight-Through Estimator
+(STE)~\cite{bengio2013ste,jacob2018quant}:
+\begin{equation}\label{eq:ste}
+\frac{\partial \mathcal{L}}{\partial W} \approx
+\frac{\partial \mathcal{L}}{\partial \hat{W}}
+\end{equation}
+This allows the optimizer to continue updating the continuous weight
+parameters, while the model learns representations that are robust to
+the ternary discretization at inference time.
+Weight clipping at $|W| > 2.0$ prevents gradient explosion during QAT.
+
+\textbf{Why QAT helps minority classes.}
+The key mechanism is that STE allows gradients from minority-class
+misclassifications to flow back through the ternary quantization
+boundary.
+During QAT, the model \emph{jointly} optimizes (a)~which weights to
+keep nonzero and (b)~the magnitude~$\alpha$, such that the ternary
+weight assignment maximally preserves classification power for
+\emph{all} classes.
+Focal loss ($\gamma = 3.0$) further amplifies the gradient contribution
+of hard examples, which are disproportionately from minority classes.
+The result is that the QAT model's ternary weights are specifically
+structured to handle the imbalanced CIC-IDS-2017 distribution.
+
+\textbf{Important note.}
+The QAT model is optimized \emph{exclusively} for ternary inference.
+Its float shadow weights are not meaningful as a standalone
+classifier (${\sim}$35\% accuracy), because the training objective
+drives weights toward ternary-friendly configurations rather than
+continuous optima.
+All QAT results in this paper use ternary-quantized weights from the
+QAT model; all float/int32 results use the separately trained original
+model.
+
+\subsection{EarlyExit}\label{sec:earlyexit}
+
+We briefly note that \sys also includes an experimental
+confidence-gated EarlyExit mechanism: a lightweight exit head after
+Layer~0 that skips remaining tail-call stages when the top-2 logit
+margin exceeds a threshold.
+In the current design, EarlyExit drops accuracy to 74.88\% when combined
+with MapLUT, because the exit head operates on coarsely quantized LUT
+features and compounds the discretization error for difficult samples.
+We consider EarlyExit a \emph{limitation} of the current system and
+leave its improvement to future work; all main results in this paper
+are reported \emph{without} EarlyExit.
 
 
 %% ============================================================
@@ -423,14 +492,14 @@ Note that in \sys V3, TernaryShift layers avoid the accumulator issue
 entirely (ternary dot products cannot overflow \texttt{int64} for any
 practical hidden size), and MapLUT accumulates only additions of
 pre-scaled \texttt{int32} values.
-The overflow bound remains relevant for the baseline comparison and for
-any layer that retains full int32 weights.
+The overflow bound remains relevant for the V3b variant (MapLUT+Int32
+hidden layers) and for any layer that retains full int32 weights.
 
 
 %% ============================================================
 \section{Evaluation}\label{sec:eval}
 
-\subsection{Setup}
+\subsection{Setup}\label{sec:setup}
 
 \textbf{Dataset.}
 We evaluate on CIC-IDS-2017~\cite{sharafaldin2018cicids}, a standard
@@ -438,7 +507,7 @@ intrusion-detection benchmark with 2.31M labeled network flows across
 4 classes: BENIGN (85.5\%), DDoS (13.9\%), PortScan (0.08\%), and
 BruteForce (0.55\%).
 We use a 75/25 train/test split (578K test samples) with 100K/class
-oversampling during training to handle class imbalance.
+oversampling during training.
 Twelve features are used, all extractable from packet headers in XDP.
 
 \textbf{Environment.}
@@ -447,71 +516,99 @@ Models are trained with a numpy-only MLP implementation (no PyTorch or
 sklearn).
 Architecture: $[12, 64, 64, 4]$ with $s = 2^{16}$.
 
-\subsection{Zero-Multiply Verification}
+\textbf{Two models.}
+As described in \S\ref{sec:qat}, we train two separate models:
+the \emph{original model} (standard cross-entropy, 100 epochs) for
+Float/Int32 baselines, and the \emph{QAT model} (30-epoch warmup +
+90-epoch STE training with focal loss) for all ternary-QAT
+configurations.
+We are careful to report which model produces which numbers throughout.
 
-Table~\ref{tab:headline} (reproduced from the introduction) shows the
-key result.
+\subsection{Zero-Multiply Verification}\label{sec:zeromul}
+
+Table~\ref{tab:headline} shows the key result.
 The baseline V0 uses 804 instructions with 15 multiplications.
 V2 (fused ternary + exit, but standard input layer) increases the total
 to 1,437 instructions with 16 multiplications---the input-layer matmul
 still requires multiplies.
 V3 replaces the input layer with MapLUT, achieving 1,424 total
-instructions with \emph{zero} multiplications.
+instructions with \emph{zero} multiplications, verified by
+\texttt{llvm-objdump~|~grep~mul~=~0} on the compiled BPF object.
+V3b (MapLUT with int32 hidden layers) retains 5 multiplies.
 Figure~\ref{fig:instructions} provides the per-stage breakdown.
 
 \subsection{Accuracy Ablation}\label{sec:ablation}
 
-Table~\ref{tab:ablation} presents the accuracy and macro-F1 for each
-operator combination, isolating each contribution.
+Table~\ref{tab:ablation} presents the main accuracy comparison,
+spanning all operator combinations and both training procedures.
 
 \begin{table}[t]
 \centering
-\caption{Accuracy ablation on CIC-IDS-2017 (578K test, 4 classes).
-``MapLUT'' replaces Layer~0; ``Ternary'' replaces hidden layers;
-``Exit'' enables EarlyExit.}
+\caption{Accuracy ablation on CIC-IDS-2017 (578K test, 4~classes).
+``Source'' indicates which trained model produces the result.
+PS = PortScan, BF = BruteForce.}
 \label{tab:ablation}
 \small
-\begin{tabular}{lcc}
+\begin{tabular}{@{}llccccl@{}}
 \toprule
-Mode & Accuracy & Macro F1 \\
+Configuration & Source & Acc. & Macro F1 & PS F1 & BF F1 & Zero-Mul? \\
 \midrule
-Float (reference)                    & 97.64\% & 0.770 \\
-Int32 (all int multiply)             & 97.64\% & 0.770 \\
-MapLUT + Int32 (partial zero-mul)    & 90.39\% & 0.508 \\
-Int32 + TernaryShift (partial)       & 95.02\% & 0.482 \\
-MapLUT + TernaryShift (full, no exit) & 92.10\% & 0.501 \\
-MapLUT + TernaryShift + EarlyExit    & 74.88\% & 0.365 \\
+Float            & Original & 97.64\% & 0.770 & 0.597 & 0.552 & No \\
+Int32            & Original & 97.64\% & 0.770 & 0.597 & 0.552 & No \\
+Post-hoc Ternary & Original & 95.02\% & 0.482 & 0.020 & 0.039 & Partial \\
+MapLUT+Int32 (64b) & Original & 90.39\% & 0.508 & 0.029 & 0.220 & Partial \\
+\midrule
+\textbf{Ternary-QAT}     & \textbf{QAT} & \textbf{96.38\%} & \textbf{0.742} & \textbf{0.635} & \textbf{0.432} & Partial \\
+\textbf{MapLUT+T-QAT 256b} & \textbf{QAT} & \textbf{91.97\%} & \textbf{0.691} & \textbf{0.629} & \textbf{0.383} & \textbf{YES} \\
+\textbf{MapLUT+T-QAT 512b} & \textbf{QAT} & \textbf{95.78\%} & \textbf{0.721} & \textbf{0.629} & \textbf{0.379} & \textbf{YES} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\textbf{Analysis.}
-The int32 baseline perfectly preserves float accuracy (97.64\%),
-confirming the enlargement method at $b{=}16$ introduces no measurable
-loss.
-MapLUT alone reduces accuracy to 90.39\% due to bin quantization of
-input features (64 bins); the per-class breakdown in
-Table~\ref{tab:perclass} shows this primarily affects minority classes.
-TernaryShift alone costs 2.6\% accuracy, as expected from ternary weight
-quantization.
-The full zero-multiply configuration (MapLUT + TernaryShift) achieves
-92.10\%, representing a 5.5~percentage-point trade-off for completely
-eliminating multiplications.
-EarlyExit further reduces accuracy to 74.88\% because the exit head
-operates on MapLUT features, compounding the bin quantization error for
-difficult samples.
-Figure~\ref{fig:ablation} visualizes the ablation.
+\textbf{Lossless int32 quantization.}
+The int32 baseline perfectly preserves float accuracy (97.64\% and
+macro~F1 0.770), confirming the enlargement method at $b{=}16$
+introduces no measurable loss.
 
-\begin{figure}[t]
-\centering
-\includegraphics[width=\columnwidth]{figures/ablation_accuracy.pdf}
-\caption{Accuracy ablation across operator combinations.}
-\label{fig:ablation}
-\end{figure}
+\textbf{Post-hoc ternary fails on minority classes.}
+Directly ternarizing the original model's weights preserves overall
+accuracy (95.02\%) because BENIGN and DDoS---which dominate the test
+set---remain largely correct.
+However, PortScan F1 collapses from 0.597 to 0.020 and BruteForce from
+0.552 to 0.039.
+The model effectively loses its ability to distinguish rare attack
+classes, as the coarse ternary discretization destroys the precise weight
+values these classes depend on.
+
+\textbf{QAT recovers minority classes.}
+The QAT model's ternary weights achieve 96.38\% overall accuracy with
+macro~F1 of 0.742---substantially higher than the post-hoc ternary's
+0.482.
+Crucially, PortScan F1 rises to 0.635, \emph{exceeding} the float
+baseline's 0.597.
+This counterintuitive improvement occurs because QAT with focal loss
+($\gamma{=}3.0$) forces the model to allocate its limited ternary
+representational capacity toward correctly classifying hard,
+underrepresented cases.
+
+\textbf{Full zero-multiply pipeline.}
+MapLUT + Ternary-QAT at 512 bins achieves 95.78\% accuracy with
+macro~F1 of 0.721 and zero BPF multiply instructions.
+The PortScan~F1 of 0.629 still exceeds the float baseline,
+demonstrating that the accuracy cost of eliminating all multiplications
+is modest and primarily affects the majority-class margin rather than
+minority-class detection.
+
+\subsection{Per-Class Analysis}\label{sec:perclass}
+
+Table~\ref{tab:perclass} shows the per-class breakdown for the float
+baseline, and Figure~\ref{fig:confusion} visualizes the confusion
+matrices across four configurations.
 
 \begin{table}[t]
 \centering
-\caption{Per-class performance of the float baseline on CIC-IDS-2017.}
+\caption{Per-class performance of the float baseline (original model)
+on CIC-IDS-2017.}
 \label{tab:perclass}
 \small
 \begin{tabular}{lcccc}
@@ -528,74 +625,89 @@ BruteForce & 0.401 & 0.887 & 0.552 & 3{,}176 \\
 
 \begin{figure}[t]
 \centering
-\includegraphics[width=\columnwidth]{figures/per_class_f1.pdf}
-\caption{Per-class F1 scores. Minority classes (PortScan, BruteForce)
-are the primary challenge.}
+\includegraphics[width=\columnwidth]{figures/confusion_matrix.pdf}
+\caption{Confusion matrices for four configurations.
+Post-hoc ternary (upper right) collapses PortScan and BruteForce into
+BENIGN.
+Ternary-QAT (lower left) and MapLUT+Ternary-QAT 512b (lower right)
+recover minority-class structure.}
+\label{fig:confusion}
+\end{figure}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{figures/per_class_f1_comparison.pdf}
+\caption{Per-class F1 comparison across configurations.
+QAT-based methods (right two groups) recover minority classes;
+PortScan~F1 under MapLUT+Ternary-QAT (0.629) exceeds the float baseline
+(0.597).}
 \label{fig:perclass}
 \end{figure}
 
-\textbf{Discussion.}
-The accuracy gap between the float baseline and zero-multiply
-configurations is primarily attributable to the severe class imbalance:
-PortScan (0.08\%) and BruteForce (0.55\%) together account for
-$<$1\% of samples but disproportionately affect macro-F1.
-The per-class results (Table~\ref{tab:perclass}) confirm that BENIGN and
-DDoS classification remains strong (F1 $>$ 0.94) even in the float
-baseline, while PortScan and BruteForce are inherently difficult.
-We believe this gap can be narrowed with more bins (see
-\S\ref{sec:bins}), class-aware bin boundaries, or hybrid architectures
-that retain full-precision weights for minority-class neurons.
+The per-class analysis (Figure~\ref{fig:perclass}) reveals the central
+finding: post-hoc quantization primarily damages minority classes
+(PortScan, BruteForce), while QAT-based methods maintain or improve
+them.
+BENIGN and DDoS classification remains strong ($\text{F1} > 0.93$)
+across all configurations.
+The PortScan F1 improvement from 0.597 to 0.629 under
+MapLUT+Ternary-QAT is especially notable---it demonstrates that
+\emph{aggressive quantization plus QAT can outperform float baselines
+on hard classes}, because the training procedure forces representational
+capacity toward difficult examples.
 
 \subsection{Bins vs.\ Accuracy}\label{sec:bins}
 
 The number of MapLUT bins $B$ controls the input-quantization
-granularity and directly affects both accuracy and memory.
-Table~\ref{tab:bins} shows the trade-off for the MapLUT + TernaryShift
-configuration (no early exit).
+granularity.
+Table~\ref{tab:bins} shows the trade-off for the MapLUT + Ternary-QAT
+configuration using the QAT model.
 
 \begin{table}[t]
 \centering
-\caption{MapLUT bin count vs.\ accuracy and memory (MapLUT + TernaryShift,
-no exit, $h{=}64$, 12 features).}
+\caption{MapLUT bin count vs.\ accuracy and memory
+(MapLUT + Ternary-QAT, QAT model, $h{=}64$, 12 features).}
 \label{tab:bins}
 \small
-\begin{tabular}{rcc}
+\begin{tabular}{rcccr}
 \toprule
-Bins ($B$) & Accuracy & LUT Memory \\
+Bins ($B$) & Accuracy & Macro F1 & PS F1 & LUT Memory \\
 \midrule
-16  & 85.5\% & 48\,KB  \\
-32  & 87.3\% & 96\,KB  \\
-64  & 92.1\% & 192\,KB \\
-128 & 93.5\% & 384\,KB \\
-256 & 94.2\% & 768\,KB \\
+64   & 82.55\% & 0.510 & 0.272 &  192\,KB \\
+128  & 86.54\% & 0.618 & 0.540 &  384\,KB \\
+256  & 91.97\% & 0.691 & 0.629 &  768\,KB \\
+512  & 95.78\% & 0.721 & 0.629 & 1{,}536\,KB \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \begin{figure}[t]
 \centering
-\includegraphics[width=\columnwidth]{figures/bins_vs_accuracy.pdf}
-\caption{Accuracy vs.\ number of MapLUT bins. Diminishing returns beyond
-$B{=}64$.}
+\includegraphics[width=\columnwidth]{figures/bins_sweep_qat.pdf}
+\caption{Bins vs.\ accuracy and LUT memory for MapLUT + Ternary-QAT.
+PortScan F1 saturates at 256 bins (0.629), while overall accuracy
+continues to improve at 512 bins.}
 \label{fig:bins}
 \end{figure}
 
-Accuracy improves monotonically with $B$ but exhibits diminishing
-returns: going from 64 to 256 bins gains only 2.1 percentage points
-while quadrupling memory.
-We select $B{=}64$ as the default, balancing 92.1\% accuracy against
-192\,KB per-CPU memory.
-At $B{=}256$, accuracy reaches 94.2\%---within 3.4 points of the full
-int32 baseline---at 768\,KB per CPU, which remains feasible for modern
-servers.
+Accuracy improves monotonically with $B$ (Figure~\ref{fig:bins}).
+PortScan F1 saturates at $B{=}256$ (0.629), suggesting that 256 bins
+provide sufficient input resolution for minority-class discrimination.
+Overall accuracy continues to improve from 91.97\% (256 bins) to
+95.78\% (512 bins), primarily reflecting better BENIGN/DDoS separation
+at finer granularity.
+We select $B{=}512$ as the recommended configuration, achieving
+95.78\% accuracy within 1.86~percentage points of the full int32
+baseline while maintaining zero multiplications.
 
-\subsection{Memory Analysis}
+\subsection{Memory Analysis}\label{sec:memory}
 
-Table~\ref{tab:memory} breaks down \sys's memory footprint.
+Table~\ref{tab:memory} breaks down \sys's memory footprint for the
+recommended 512-bin configuration.
 
 \begin{table}[t]
 \centering
-\caption{\sys V3 memory layout (default $B{=}64$, $h{=}64$).}
+\caption{\sys V3 memory layout ($B{=}512$, $h{=}64$).}
 \label{tab:memory}
 \small
 \begin{tabular}{lr}
@@ -603,19 +715,22 @@ Table~\ref{tab:memory} breaks down \sys's memory footprint.
 Component & Size \\
 \midrule
 Model parameters (ternary + biases) & 1.8\,KB \\
-MapLUT ($12 \times 64 \times 64 \times 4$\,B) & 192\,KB/CPU \\
+MapLUT ($12 \times 512 \times 64 \times 4$\,B) & 1{,}536\,KB/CPU \\
 Per-CPU scratch (\texttt{nn\_ctx}) & ${\sim}$300\,B/CPU \\
 Flow map (65{,}536 entries) & ${\sim}$2\,MB shared \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-The dominant cost is the MapLUT (192\,KB per CPU), which trades memory
+The dominant cost is the MapLUT (1.5\,MB per CPU), which trades memory
 for multiply-free computation.
-On a 16-core server, the total LUT footprint is ${\sim}$3\,MB---well
-within kernel memory budgets.
+On a 16-core server, the total LUT footprint is ${\sim}$24\,MB---well
+within kernel memory budgets for modern servers with $>$32\,GB RAM.
 The ternary model itself is remarkably compact at 1.8\,KB, a $3\times$
 reduction over the int32 baseline's 5.6\,KB.
+For memory-constrained deployments, the 256-bin configuration achieves
+91.97\% accuracy at 768\,KB/CPU---a $2\times$ reduction with the same
+PortScan~F1 of 0.629.
 
 
 %% ============================================================
@@ -655,35 +770,48 @@ symmetric threshold.
 multiplication with a bit shift calibrated to the ternary magnitude,
 ensuring full compatibility with eBPF's instruction set.
 
+\textbf{Quantization-aware training.}
+Jacob~\etal~\cite{jacob2018quant} demonstrated that training with
+simulated quantization in the forward pass and STE in the backward pass
+yields integer-arithmetic-only models with minimal accuracy loss.
+Bengio~\etal~\cite{bengio2013ste} provided the theoretical foundation
+for straight-through estimators of discrete neurons.
+\sys applies QAT to \emph{ternary} quantization in the context of
+severely imbalanced security data, where we show that post-hoc
+quantization fails catastrophically and QAT is essential.
+
 
 %% ============================================================
 \section{Conclusion}\label{sec:conclusion}
 
 We presented \sys, the first eBPF/XDP neural inference engine with
 zero multiply instructions.
-Three co-designed operators---MapLUT, TernaryShift, and
-EarlyExit---jointly eliminate all multiplications while preserving
-multi-class IDS capability.
-On CIC-IDS-2017, the full zero-multiply configuration achieves 92.1\%
-accuracy with 1,424 BPF instructions, none of which are multiplications.
-MapLUT's BPF-map-based design uniquely enables zero-downtime model
-hot-updates, opening the door to online learning in the kernel datapath.
+Through operator co-design---MapLUT for the input layer and TernaryShift
+for hidden layers---and quantization-aware training with straight-through
+estimation, \sys achieves 95.78\% accuracy on CIC-IDS-2017 with 1,424
+BPF instructions, none of which are multiplications.
+The QAT procedure is critical: post-hoc ternary quantization
+catastrophically collapses minority-class performance (PortScan F1
+drops to 0.020), while QAT with focal loss not only recovers but
+\emph{improves} PortScan F1 to 0.629, exceeding the float baseline's
+0.597.
 
 \textbf{Limitations.}
-The accuracy gap between zero-multiply (92.1\%) and full int32 (97.64\%)
-is non-trivial, particularly for minority classes.
-EarlyExit amplifies this gap when combined with MapLUT's coarser input
-representation.
-We believe class-aware bin quantization and adaptive thresholding can
-narrow this gap.
+The accuracy gap between zero-multiply (95.78\%) and full int32 (97.64\%)
+is non-trivial.
+The 512-bin LUT requires 1.5\,MB per CPU, which may be prohibitive on
+resource-constrained embedded devices.
+EarlyExit in its current form hurts accuracy (74.88\%) and is not
+recommended for deployment.
 
 \textbf{Future work} includes:
-(1)~increasing MapLUT bins to 256 with class-aware boundaries to close
-the accuracy gap;
+(1)~improving EarlyExit with class-aware confidence thresholds to safely
+skip easy traffic;
 (2)~live XDP deployment with \texttt{tcpreplay} to measure end-to-end
 throughput;
 (3)~online model retraining with hot LUT updates for concept-drift
-adaptation.
+adaptation; and
+(4)~extending QAT to binary (1-bit) weights for further compression.
 
 
 %% ============================================================

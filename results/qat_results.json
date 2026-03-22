@@ -1,0 +1,445 @@
+{
+  "architecture": [
+    12,
+    64,
+    64,
+    4
+  ],
+  "threshold_ratio": 0.7,
+  "num_bins_best": 256,
+  "training": {
+    "epochs": 120,
+    "warmup_epochs": 30,
+    "qat_epochs": 90,
+    "batch_size": 256,
+    "lr": 0.01,
+    "gamma": 3.0,
+    "oversample_target": 100000
+  },
+  "float": {
+    "accuracy": 0.3536885160879878,
+    "macro_f1": 0.2900201134611132,
+    "per_class": {
+      "BENIGN": {
+        "precision": 0.940468,
+        "recall": 0.321173,
+        "f1": 0.478826,
+        "support": 494238
+      },
+      "DDOS": {
+        "precision": 0.707035,
+        "recall": 0.553211,
+        "f1": 0.620735,
+        "support": 80501
+      },
+      "PORTSCAN": {
+        "precision": 0.00155,
+        "recall": 0.941399,
+        "f1": 0.003095,
+        "support": 529
+      },
+      "BRUTEFORCE": {
+        "precision": 0.0323,
+        "recall": 0.258501,
+        "f1": 0.057425,
+        "support": 3176
+      }
+    }
+  },
+  "int32": {
+    "accuracy": 0.35369543119126484,
+    "macro_f1": 0.2900226646744979,
+    "per_class": {
+      "BENIGN": {
+        "precision": 0.940471,
+        "recall": 0.321187,
+        "f1": 0.478842,
+        "support": 494238
+      },
+      "DDOS": {
+        "precision": 0.707055,
+        "recall": 0.553173,
+        "f1": 0.620719,
+        "support": 80501
+      },
+      "PORTSCAN": {
+        "precision": 0.00155,
+        "recall": 0.941399,
+        "f1": 0.003095,
+        "support": 529
+      },
+      "BRUTEFORCE": {
+        "precision": 0.032306,
+        "recall": 0.258501,
+        "f1": 0.057435,
+        "support": 3176
+      }
+    }
+  },
+  "ternary_qat": {
+    "accuracy": 0.963825365981841,
+    "macro_f1": 0.741658443422284,
+    "per_class": {
+      "BENIGN": {
+        "precision": 0.993301,
+        "recall": 0.96546,
+        "f1": 0.979183,
+        "support": 494238
+      },
+      "DDOS": {
+        "precision": 0.886583,
+        "recall": 0.956969,
+        "f1": 0.920433,
+        "support": 80501
+      },
+      "PORTSCAN": {
+        "precision": 0.665975,
+        "recall": 0.606805,
+        "f1": 0.635015,
+        "support": 529
+      },
+      "BRUTEFORCE": {
+        "precision": 0.280206,
+        "recall": 0.942695,
+        "f1": 0.432003,
+        "support": 3176
+      }
+    }
+  },
+  "maplut_int32": {
+    "accuracy": 0.27348196195310176,
+    "macro_f1": 0.2508928338567123,
+    "per_class": {
+      "BENIGN": {
+        "precision": 0.947039,
+        "recall": 0.23919,
+        "f1": 0.381921,
+        "support": 494238
+      },
+      "DDOS": {
+        "precision": 0.643934,
+        "recall": 0.480193,
+        "f1": 0.550138,
+        "support": 80501
+      },
+      "PORTSCAN": {
+        "precision": 0.001377,
+        "recall": 0.971645,
+        "f1": 0.00275,
+        "support": 529
+      },
+      "BRUTEFORCE": {
+        "precision": 0.039762,
+        "recall": 0.254093,
+        "f1": 0.068763,
+        "support": 3176
+      }
+    }
+  },
+  "maplut_ternary_qat": {
+    "accuracy": 0.9196499574721149,
+    "macro_f1": 0.6904877315454881,
+    "per_class": {
+      "BENIGN": {
+        "precision": 0.993232,
+        "recall": 0.914584,
+        "f1": 0.952287,
+        "support": 494238
+      },
+      "DDOS": {
+        "precision": 0.681761,
+        "recall": 0.958485,
+        "f1": 0.79678,
+        "support": 80501
+      },
+      "PORTSCAN": {
+        "precision": 0.653768,
+        "recall": 0.606805,
+        "f1": 0.629412,
+        "support": 529
+      },
+      "BRUTEFORCE": {
+        "precision": 0.254677,
+        "recall": 0.775819,
+        "f1": 0.383472,
+        "support": 3176
+      }
+    }
+  },
+  "maplut_sweep": {
+    "64": {
+      "maplut_int32": {
+        "accuracy": 0.12213974040702298,
+        "macro_f1": 0.1097236209346291,
+        "per_class": {
+          "BENIGN": {
+            "precision": 0.995359,
+            "recall": 0.117154,
+            "f1": 0.209634,
+            "support": 494238
+          },
+          "DDOS": {
+            "precision": 0.395826,
+            "recall": 0.151489,
+            "f1": 0.219118,
+            "support": 80501
+          },
+          "PORTSCAN": {
+            "precision": 0.001037,
+            "recall": 0.937618,
+            "f1": 0.002072,
+            "support": 529
+          },
+          "BRUTEFORCE": {
+            "precision": 0.00518,
+            "recall": 0.018262,
+            "f1": 0.008071,
+            "support": 3176
+          }
+        }
+      },
+      "maplut_ternary_qat": {
+        "accuracy": 0.8255475033019618,
+        "macro_f1": 0.5104200996019277,
+        "per_class": {
+          "BENIGN": {
+            "precision": 0.995781,
+            "recall": 0.803206,
+            "f1": 0.889186,
+            "support": 494238
+          },
+          "DDOS": {
+            "precision": 0.469751,
+            "recall": 0.975354,
+            "f1": 0.634104,
+            "support": 80501
+          },
+          "PORTSCAN": {
+            "precision": 0.178698,
+            "recall": 0.570888,
+            "f1": 0.272195,
+            "support": 529
+          },
+          "BRUTEFORCE": {
+            "precision": 0.158798,
+            "recall": 0.547544,
+            "f1": 0.246195,
+            "support": 3176
+          }
+        }
+      },
+      "lut_memory_bytes": 196608
+    },
+    "128": {
+      "maplut_int32": {
+        "accuracy": 0.18371009121021223,
+        "macro_f1": 0.1869816647011342,
+        "per_class": {
+          "BENIGN": {
+            "precision": 0.94973,
+            "recall": 0.162537,
+            "f1": 0.277571,
+            "support": 494238
+          },
+          "DDOS": {
+            "precision": 0.55431,
+            "recall": 0.305872,
+            "f1": 0.394214,
+            "support": 80501
+          },
+          "PORTSCAN": {
+            "precision": 0.001148,
+            "recall": 0.933837,
+            "f1": 0.002292,
+            "support": 529
+          },
+          "BRUTEFORCE": {
+            "precision": 0.043113,
+            "recall": 0.257242,
+            "f1": 0.07385,
+            "support": 3176
+          }
+        }
+      },
+      "maplut_ternary_qat": {
+        "accuracy": 0.865447649210641,
+        "macro_f1": 0.6183025090719226,
+        "per_class": {
+          "BENIGN": {
+            "precision": 0.999104,
+            "recall": 0.845935,
+            "f1": 0.916161,
+            "support": 494238
+          },
+          "DDOS": {
+            "precision": 0.542871,
+            "recall": 0.990522,
+            "f1": 0.701354,
+            "support": 80501
+          },
+          "PORTSCAN": {
+            "precision": 0.487102,
+            "recall": 0.606805,
+            "f1": 0.540404,
+            "support": 529
+          },
+          "BRUTEFORCE": {
+            "precision": 0.197909,
+            "recall": 0.774874,
+            "f1": 0.315291,
+            "support": 3176
+          }
+        }
+      },
+      "lut_memory_bytes": 393216
+    },
+    "256": {
+      "maplut_int32": {
+        "accuracy": 0.27348196195310176,
+        "macro_f1": 0.2508928338567123,
+        "per_class": {
+          "BENIGN": {
+            "precision": 0.947039,
+            "recall": 0.23919,
+            "f1": 0.381921,
+            "support": 494238
+          },
+          "DDOS": {
+            "precision": 0.643934,
+            "recall": 0.480193,
+            "f1": 0.550138,
+            "support": 80501
+          },
+          "PORTSCAN": {
+            "precision": 0.001377,
+            "recall": 0.971645,
+            "f1": 0.00275,
+            "support": 529
+          },
+          "BRUTEFORCE": {
+            "precision": 0.039762,
+            "recall": 0.254093,
+            "f1": 0.068763,
+            "support": 3176
+          }
+        }
+      },
+      "maplut_ternary_qat": {
+        "accuracy": 0.9196499574721149,
+        "macro_f1": 0.6904877315454881,
+        "per_class": {
+          "BENIGN": {
+            "precision": 0.993232,
+            "recall": 0.914584,
+            "f1": 0.952287,
+            "support": 494238
+          },
+          "DDOS": {
+            "precision": 0.681761,
+            "recall": 0.958485,
+            "f1": 0.79678,
+            "support": 80501
+          },
+          "PORTSCAN": {
+            "precision": 0.653768,
+            "recall": 0.606805,
+            "f1": 0.629412,
+            "support": 529
+          },
+          "BRUTEFORCE": {
+            "precision": 0.254677,
+            "recall": 0.775819,
+            "f1": 0.383472,
+            "support": 3176
+          }
+        }
+      },
+      "lut_memory_bytes": 786432
+    },
+    "512": {
+      "maplut_int32": {
+        "accuracy": 0.31783370559639307,
+        "macro_f1": 0.27114610736678046,
+        "per_class": {
+          "BENIGN": {
+            "precision": 0.94198,
+            "recall": 0.28533,
+            "f1": 0.437991,
+            "support": 494238
+          },
+          "DDOS": {
+            "precision": 0.653393,
+            "recall": 0.515695,
+            "f1": 0.576435,
+            "support": 80501
+          },
+          "PORTSCAN": {
+            "precision": 0.001447,
+            "recall": 0.941399,
+            "f1": 0.00289,
+            "support": 529
+          },
+          "BRUTEFORCE": {
+            "precision": 0.0387,
+            "recall": 0.256927,
+            "f1": 0.067268,
+            "support": 3176
+          }
+        }
+      },
+      "maplut_ternary_qat": {
+        "accuracy": 0.9578213275615272,
+        "macro_f1": 0.7211059777819752,
+        "per_class": {
+          "BENIGN": {
+            "precision": 0.987688,
+            "recall": 0.963961,
+            "f1": 0.97568,
+            "support": 494238
+          },
+          "DDOS": {
+            "precision": 0.872983,
+            "recall": 0.929504,
+            "f1": 0.900357,
+            "support": 80501
+          },
+          "PORTSCAN": {
+            "precision": 0.653768,
+            "recall": 0.606805,
+            "f1": 0.629412,
+            "support": 529
+          },
+          "BRUTEFORCE": {
+            "precision": 0.25043,
+            "recall": 0.778652,
+            "f1": 0.378975,
+            "support": 3176
+          }
+        }
+      },
+      "lut_memory_bytes": 1572864
+    }
+  },
+  "ternary_analysis": [
+    {
+      "layer": 1,
+      "alpha_shift": 14,
+      "sparsity_pct": 45.6,
+      "shape": [
+        64,
+        64
+      ]
+    },
+    {
+      "layer": 2,
+      "alpha_shift": 15,
+      "sparsity_pct": 41.8,
+      "shape": [
+        4,
+        64
+      ]
+    }
+  ],
+  "train_samples": 400000,
+  "test_samples": 578444
+}

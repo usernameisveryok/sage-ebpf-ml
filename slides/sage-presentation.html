@@ -770,11 +770,11 @@ p, li { font-size: var(--body-size); color: var(--text); }
 </section>
 
 <!-- ============================================================ -->
-<!-- SLIDE 3: Three Operator Innovations -->
+<!-- SLIDE 3: Four Key Innovations -->
 <!-- ============================================================ -->
 <section class="slide" id="slide-3">
     <div class="slide-content reveal" style="align-items: center;">
-        <h2 class="stagger">Three Operator Innovations</h2>
+        <h2 class="stagger">Four Key Innovations</h2>
         <div class="contrib-cards">
             <div class="contrib-card stagger">
                 <div class="contrib-num">01</div>
@@ -793,8 +793,15 @@ p, li { font-size: var(--body-size); color: var(--text); }
             <div class="contrib-card stagger">
                 <div class="contrib-num">03</div>
                 <div class="contrib-body">
-                    <h3>EarlyExit</h3>
-                    <p>Confidence-gated tail-call bypass for ~85% benign traffic</p>
+                    <h3>Quantization-Aware Training (QAT)</h3>
+                    <p>STE-based training makes ternary weights viable for imbalanced security data</p>
+                </div>
+            </div>
+            <div class="contrib-card stagger">
+                <div class="contrib-num">04</div>
+                <div class="contrib-body">
+                    <h3>Design Space Exploration</h3>
+                    <p>48-config sweep over bins, quantization, and operators</p>
                 </div>
             </div>
         </div>
@@ -884,35 +891,28 @@ p, li { font-size: var(--body-size); color: var(--text); }
 </section>
 
 <!-- ============================================================ -->
-<!-- SLIDE 6: EarlyExit Operator -->
+<!-- SLIDE 6: Quantization-Aware Training (QAT) -->
 <!-- ============================================================ -->
 <section class="slide" id="slide-6">
     <div class="slide-content reveal" style="align-items: center; gap: var(--content-gap);">
-        <h2 class="stagger">EarlyExit Operator</h2>
-        <p class="stagger" style="text-align: center; color: var(--text-dim); font-size: var(--body-size);">
-            <span class="cyan">85.5%</span> of traffic is BENIGN — why run the full pipeline?
-        </p>
-        <div class="pipeline stagger">
-            <div class="pipe-stage">
-                <div class="pipe-stage-name">Layer 0</div>
-                <div class="pipe-stage-detail">MapLUT</div>
+        <h2 class="stagger">Quantization-Aware Training (QAT)</h2>
+        <div class="insight-row stagger">
+            <div class="insight-box danger">
+                <div class="insight-label red">Problem</div>
+                <div class="insight-value">Post-hoc ternary quantization destroys minority class detection</div>
+                <p class="small" style="margin-top: 6px;">PortScan F1: <span class="cyan">0.597</span> → <span class="red">0.020</span> <span class="red">(30× collapse!)</span></p>
             </div>
-            <div class="pipe-arrow">→</div>
-            <div class="pipe-stage" style="border-color: var(--cyan);">
-                <div class="pipe-stage-name cyan">Exit Head</div>
-                <div class="pipe-stage-detail">logit margin</div>
-            </div>
-            <div class="pipe-arrow">→</div>
-            <div class="pipe-stage" style="border-color: var(--green);">
-                <div class="pipe-stage-name green">CLASSIFY</div>
-                <div class="pipe-stage-detail">skip 2 tail calls</div>
+            <div class="insight-box success">
+                <div class="insight-label green">Solution</div>
+                <div class="insight-value">QAT with Straight-Through Estimator</div>
+                <p class="small" style="margin-top: 6px;">Two-phase: 30 ep warmup → 90 ep ternary with STE</p>
+                <p class="small">Focal loss γ=3.0 forces attention on rare classes</p>
             </div>
         </div>
         <div class="stagger" style="margin-top: var(--content-gap);">
-            <div class="big-number" style="font-size: clamp(2.5rem, 8vw, 6rem);">93%</div>
-            <div class="big-label">Early Exit Rate</div>
+            <div class="big-number" style="font-size: clamp(2.5rem, 8vw, 6rem);">0.635</div>
+            <div class="big-label">PortScan F1 recovered <span class="dim">(exceeds float baseline of 0.597!)</span></div>
         </div>
-        <p class="small stagger" style="text-align: center;">If confident after Layer 0 → jump directly to CLASSIFY</p>
     </div>
     <div class="slide-num">06 / 12</div>
 </section>
@@ -947,6 +947,11 @@ p, li { font-size: var(--body-size); color: var(--text); }
                     <td>1,424</td>
                     <td><strong>0</strong></td>
                 </tr>
+                <tr class="highlight">
+                    <td>V3b — MapLUT+Int32</td>
+                    <td>1,016</td>
+                    <td><strong class="red">5</strong></td>
+                </tr>
             </tbody>
         </table>
         <div class="finding-highlight stagger">
@@ -965,41 +970,54 @@ p, li { font-size: var(--body-size); color: var(--text); }
         <table class="data-table stagger">
             <thead>
                 <tr>
-                    <th>Mode</th>
+                    <th>Config</th>
+                    <th>Source</th>
                     <th>Accuracy</th>
                     <th>Macro F1</th>
+                    <th>PS F1</th>
+                    <th>Zero-Mul?</th>
                 </tr>
             </thead>
             <tbody>
                 <tr>
-                    <td>Float (reference)</td>
+                    <td>Float</td>
+                    <td class="dim">Original</td>
                     <td>97.64%</td>
                     <td>0.770</td>
+                    <td>0.597</td>
+                    <td class="dim">No</td>
                 </tr>
                 <tr>
                     <td>Int32</td>
+                    <td class="dim">Original</td>
                     <td>97.64%</td>
                     <td>0.770</td>
+                    <td>0.597</td>
+                    <td class="dim">No</td>
                 </tr>
                 <tr>
-                    <td>MapLUT + Int32</td>
-                    <td>90.39%</td>
-                    <td>0.508</td>
-                </tr>
-                <tr>
-                    <td>Int32 + Ternary</td>
+                    <td>Post-hoc Ternary</td>
+                    <td class="dim">Original</td>
                     <td>95.02%</td>
                     <td>0.482</td>
+                    <td><strong class="red">0.020</strong></td>
+                    <td class="dim">Partial</td>
                 </tr>
-                <tr>
-                    <td>MapLUT + Ternary</td>
-                    <td>92.10%</td>
-                    <td>0.501</td>
+                <tr class="highlight">
+                    <td><strong>Ternary-QAT</strong></td>
+                    <td><strong>QAT</strong></td>
+                    <td><strong>96.38%</strong></td>
+                    <td><strong>0.742</strong></td>
+                    <td><strong class="green">0.635</strong></td>
+                    <td>Partial</td>
                 </tr>
-                <tr>
-                    <td>MapLUT + Ternary + Exit</td>
-                    <td>74.88%</td>
-                    <td>0.365</td>
+                <tr class="highlight">
+                    <td><strong>MapLUT+Tern-QAT 512b</strong></td>
+                    <td><strong>QAT</strong></td>
+                    <td><strong>95.78%</strong></td>
+                    <td><strong>0.721</strong></td>
+                    <td><strong class="green">0.629</strong></td>
+                    <td><strong>YES</strong></td>
                 </tr>
             </tbody>
         </table>
@@ -1012,19 +1030,23 @@ p, li { font-size: var(--body-size); color: var(--text); }
 <!-- ============================================================ -->
 <section class="slide" id="slide-9">
     <div class="slide-content reveal" style="align-items: center; gap: var(--content-gap);">
-        <h2 class="stagger">Bins vs Accuracy</h2>
+        <h2 class="stagger">Bins vs Accuracy <span class="dim">(MapLUT+Ternary-QAT)</span></h2>
         <div style="max-width: min(90vw, 600px); margin: 0 auto; width: 100%;" class="stagger">
             <div class="mini-data-row">
-                <div class="mini-data-label">16</div>
-                <div class="mini-data-bar"><div class="mini-data-fill" style="width: 85.5%">85.5%</div></div>
+                <div class="mini-data-label">64</div>
+                <div class="mini-data-bar"><div class="mini-data-fill" style="width: 82.55%">82.55%</div></div>
             </div>
             <div class="mini-data-row">
-                <div class="mini-data-label">64</div>
-                <div class="mini-data-bar"><div class="mini-data-fill critical" style="width: 92.1%">92.1%</div></div>
+                <div class="mini-data-label">128</div>
+                <div class="mini-data-bar"><div class="mini-data-fill" style="width: 86.54%">86.54%</div></div>
             </div>
             <div class="mini-data-row">
                 <div class="mini-data-label">256</div>
-                <div class="mini-data-bar"><div class="mini-data-fill" style="width: 94.2%">94.2%</div></div>
+                <div class="mini-data-bar"><div class="mini-data-fill" style="width: 91.97%">91.97%</div></div>
+            </div>
+            <div class="mini-data-row">
+                <div class="mini-data-label">512</div>
+                <div class="mini-data-bar"><div class="mini-data-fill critical" style="width: 95.78%">95.78%</div></div>
             </div>
         </div>
         <table class="data-table stagger">
@@ -1032,29 +1054,39 @@ p, li { font-size: var(--body-size); color: var(--text); }
                 <tr>
                     <th>Bins</th>
                     <th>Accuracy</th>
+                    <th>Macro F1</th>
                     <th>LUT Memory</th>
                 </tr>
             </thead>
             <tbody>
                 <tr>
-                    <td>16</td>
-                    <td>85.5%</td>
-                    <td>48 KB</td>
-                </tr>
-                <tr class="highlight">
                     <td>64</td>
-                    <td>92.1%</td>
+                    <td>82.55%</td>
+                    <td>0.510</td>
                     <td>192 KB</td>
                 </tr>
                 <tr>
+                    <td>128</td>
+                    <td>86.54%</td>
+                    <td>0.618</td>
+                    <td>384 KB</td>
+                </tr>
+                <tr>
                     <td>256</td>
-                    <td>94.2%</td>
+                    <td>91.97%</td>
+                    <td>0.691</td>
                     <td>768 KB</td>
+                </tr>
+                <tr class="highlight">
+                    <td>512 <span class="tag">selected</span></td>
+                    <td>95.78%</td>
+                    <td>0.721</td>
+                    <td>1,536 KB</td>
                 </tr>
             </tbody>
         </table>
         <div class="finding-highlight stagger">
-            <p>More bins → higher accuracy, linear memory cost</p>
+            <p>Ternary-QAT (no MapLUT) = <span class="cyan">96.38%</span> · 512 bins recovers most accuracy</p>
         </div>
     </div>
     <div class="slide-num">09 / 12</div>
@@ -1079,8 +1111,8 @@ p, li { font-size: var(--body-size); color: var(--text); }
                     <td>1.8 KB</td>
                 </tr>
                 <tr>
-                    <td>MapLUT (64 bins)</td>
-                    <td>192 KB / CPU</td>
+                    <td>MapLUT (512 bins)</td>
+                    <td>1.5 MB / CPU</td>
                 </tr>
                 <tr>
                     <td>Per-CPU scratch</td>
@@ -1094,7 +1126,7 @@ p, li { font-size: var(--body-size); color: var(--text); }
         </table>
         <div class="stats-row stagger" style="margin-top: var(--element-gap);">
             <div class="stat-item">
-                <div class="stat-value">~194 KB</div>
+                <div class="stat-value">~1.5 MB</div>
                 <div class="stat-label">Per CPU</div>
             </div>
             <div class="stat-item">
@@ -1148,7 +1180,7 @@ p, li { font-size: var(--body-size); color: var(--text); }
                     <td>SAGE (ours)</td>
                     <td>MLP zero-mul</td>
                     <td><strong>4</strong></td>
-                    <td><strong>97.6%</strong></td>
+                    <td><strong>95.78%</strong> <span class="dim">(zero-multiply)</span></td>
                     <td><strong>Yes</strong></td>
                 </tr>
             </tbody>
@@ -1173,11 +1205,11 @@ p, li { font-size: var(--body-size); color: var(--text); }
             </li>
             <li class="takeaway-item">
                 <span class="takeaway-check">✓</span>
-                <span class="takeaway-text">MapLUT enables <strong class="cyan">hot-model-update</strong> without program reload</span>
+                <span class="takeaway-text"><strong class="cyan">95.78%</strong> accuracy <strong class="cyan">(zero-multiply, 512 bins)</strong></span>
             </li>
             <li class="takeaway-item">
                 <span class="takeaway-check">✓</span>
-                <span class="takeaway-text"><strong class="cyan">97.64%</strong> accuracy (float), <strong class="cyan">92.1%</strong> (zero-multiply pipeline)</span>
+                <span class="takeaway-text">QAT recovers minority class F1: PortScan <span class="red">0.020</span> → <span class="green">0.629</span></span>
             </li>
             <li class="takeaway-item">
                 <span class="takeaway-check">✓</span>
@@ -1185,7 +1217,7 @@ p, li { font-size: var(--body-size); color: var(--text); }
             </li>
         </ul>
         <p class="stagger small" style="text-align: center; margin-top: var(--content-gap);">
-            Future: live XDP deployment · online learning via map updates · attention operators
+            Future: EarlyExit retraining · live XDP deployment · online learning
         </p>
         <div class="terminal-prompt stagger" style="margin-top: var(--element-gap);">
             <span class="prompt-char">$</span> <span class="cmd">echo</span> <span class="flag">"Questions?"</span><span class="cursor"></span>
